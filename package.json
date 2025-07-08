@@ -1,0 +1,22 @@
+{
+  "name": "azure-functions-ai",
+  "version": "1.0.0",
+  "description": "Azure Functions for AI-powered VTT processing",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "func start",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "dependencies": {
+    "@azure/functions": "^4.7.2",
+    "@azure/identity": "^4.10.2",
+    "@azure/msal-node": "^2.6.6",
+    "@azure/openai": "^1.0.0-beta.12",
+    "@microsoft/microsoft-graph-client": "^3.0.7",
+    "axios": "^1.10.0",
+    "openai": "^5.8.2"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
