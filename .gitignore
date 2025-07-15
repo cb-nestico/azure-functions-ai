@@ -1,0 +1,15 @@
+local.settings.json
+node_modules/
+bin/
+obj/
+.vscode/settings.json
+.azure/
+*.log
+.env
+.DS_Store
+Thumbs.db
+*.tmp
+.funcignore
+# Security: Never commit these files
+appsettings.json
+*.secrets.json
