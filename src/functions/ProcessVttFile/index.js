@@ -4,23 +4,26 @@ const { Client } = require('@microsoft/microsoft-graph-client');
 const { TokenCredentialAuthenticationProvider } = require('@microsoft/microsoft-graph-client/authProviders/azureTokenCredentials');
 const { OpenAI } = require('openai');
 
+// ✅ ADD THIS REGISTRATION AT THE TOP
 app.http('ProcessVttFile', {
     methods: ['GET', 'POST'],
-    authLevel: 'function', // Changed from 'anonymous' to 'function' for production
+    authLevel: 'function',
+    route: 'ProcessVttFile',
     handler: async (request, context) => {
         const startTime = Date.now();
-        context.log('🎯 Azure Function triggered: ProcessVttFile');
+        context.log('🎯 ProcessVttFile function triggered');
 
         try {
-            // 1. Parse request
-            let fileName;
+            // Parse request - handle both batch and single file processing
+            let fileName, batchMode = false, fileNames = [], outputFormat = 'json';
             
             if (request.method === 'GET') {
                 fileName = request.query.get('name');
-                context.log(`📥 GET request - fileName: ${fileName}`);
+                outputFormat = request.query.get('format') || 'json';
+                context.log(`📥 GET request - fileName: ${fileName}, format: ${outputFormat}`);
             } else {
                 const body = await request.text();
-                context.log(`📥 POST request - raw body length: ${body?.length || 0}`);
+                context.log(`📥 POST request - body length: ${body?.length || 0}`);
                 
                 if (!body || body.trim() === '') {
                     throw new Error('Request body is empty');
@@ -29,186 +32,277 @@ app.http('ProcessVttFile', {
                 try {
                     const requestData = JSON.parse(body);
                     fileName = requestData.name;
-                    context.log(`📥 Parsed JSON - fileName: ${fileName}`);
+                    batchMode = requestData.batchMode || false;
+                    fileNames = requestData.fileNames || [];
+                    outputFormat = requestData.outputFormat || 'json';
+                    
+                    context.log(`📥 Parsed request - batchMode: ${batchMode}, files: ${fileNames.length || 1}, format: ${outputFormat}`);
                 } catch (parseError) {
                     throw new Error(`Invalid JSON format: ${parseError.message}`);
                 }
             }
 
-            if (!fileName) {
-                throw new Error('File name is required (provide "name" parameter)');
+            // Determine processing mode
+            if (batchMode && fileNames.length > 1) {
+                context.log(`🔄 Starting batch processing for ${fileNames.length} files`);
+                return await processBatchFiles(context, fileNames, outputFormat);
+            } else {
+                const singleFile = fileName || (fileNames.length > 0 ? fileNames[0] : null);
+                if (!singleFile) {
+                    throw new Error('File name is required (provide "name" parameter or fileNames array)');
+                }
+                context.log(`🎥 Processing single file: ${singleFile}`);
+                return await processSingleFile(context, singleFile, outputFormat);
             }
 
-            context.log(`🎥 Processing file: ${fileName}`);
-
-            // 2. Configuration - FIXED to match your Azure environment variables
-            const config = {
-                tenantId: process.env.TENANT_ID,
-                clientId: process.env.CLIENT_ID,
-                clientSecret: process.env.CLIENT_SECRET,
-                
-                // Use East US 2 endpoint and key (your working configuration)
-                openaiEndpoint: process.env.OPENAI_ENDPOINT, // https://ai-teams-eastus2.openai.azure.com/
-                openaiKey: process.env.OPENAI_KEY, // East US 2 key
-                deployment: process.env.OPENAI_DEPLOYMENT || 'gpt-4o-text',
-                
-                sharepointDriveId: process.env.SHAREPOINT_DRIVE_ID,
-                sharepointSiteUrl: process.env.SHAREPOINT_SITE_URL
+        } catch (error) {
+            context.log.error('❌ Function execution failed:', error.message);
+            context.log.error('Stack trace:', error.stack);
+            
+            return {
+                status: 500,
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    success: false,
+                    error: 'Function execution failed',
+                    message: error.message,
+                    timestamp: new Date().toISOString(),
+                    processingTimeMs: Date.now() - startTime
+                })
             };
+        }
+    }
+});
 
-            // 3. Validate configuration
-            const requiredConfig = ['tenantId', 'clientId', 'clientSecret', 'openaiKey', 'openaiEndpoint', 'sharepointDriveId'];
-            const missingConfig = requiredConfig.filter(key => !config[key]);
-            
-            if (missingConfig.length > 0) {
-                throw new Error(`Missing required configuration: ${missingConfig.join(', ')}`);
+// ✅ YOUR EXISTING FUNCTIONS CONTINUE HERE (no changes needed)
+async function processSingleFile(context, fileName, outputFormat = 'json') {
+    const result = await processSingleVttFile(context, fileName, outputFormat);
+    return {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(result)
+    };
+}
+
+async function processBatchFiles(context, fileNames, outputFormat = 'json') {
+    const results = [];
+    const batchStartTime = Date.now();
+    const concurrencyLimit = 3;
+    
+    // Split files into batches
+    const batches = chunkArray(fileNames, concurrencyLimit);
+    context.log(`Processing ${fileNames.length} files in ${batches.length} batches`);
+    
+    for (let batchIndex = 0; batchIndex < batches.length; batchIndex++) {
+        const batch = batches[batchIndex];
+        context.log(`Processing batch ${batchIndex + 1}/${batches.length}`);
+        
+        const batchPromises = batch.map(async (fileName) => {
+            const fileStartTime = Date.now();
+            try {
+                const fileResult = await processSingleVttFile(context, fileName, outputFormat);
+                const fileProcessingTime = Date.now() - fileStartTime;
+                
+                return {
+                    fileName: fileName,
+                    success: true,
+                    processingTimeMs: fileProcessingTime,
+                    ...fileResult
+                };
+            } catch (error) {
+                const fileProcessingTime = Date.now() - fileStartTime;
+                context.log.error(`Batch processing failed for ${fileName}:`, error);
+                
+                return {
+                    fileName: fileName,
+                    success: false,
+                    error: error.message,
+                    processingTimeMs: fileProcessingTime
+                };
             }
+        });
+        
+        const batchResults = await Promise.all(batchPromises);
+        results.push(...batchResults);
+        
+        // Add delay between batches
+        if (batchIndex < batches.length - 1) {
+            context.log('Waiting 2 seconds before next batch...');
+            await new Promise(resolve => setTimeout(resolve, 2000));
+        }
+    }
+    
+    const batchTotalTime = Date.now() - batchStartTime;
+    const successfulFiles = results.filter(r => r.success);
+    
+    return {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+            success: true,
+            batchMode: true,
+            processedFiles: results.length,
+            successfulFiles: successfulFiles.length,
+            failedFiles: results.length - successfulFiles.length,
+            results: results,
+            metadata: {
+                batchProcessingTimeMs: batchTotalTime,
+                averageTimePerFile: Math.round(batchTotalTime / fileNames.length),
+                concurrencyLimit: concurrencyLimit,
+                totalBatches: batches.length,
+                outputFormat: outputFormat,
+                timestamp: new Date().toISOString()
+            }
+        })
+    };
+}
 
-            context.log('✅ Configuration validated');
-            context.log(`🔧 Using OpenAI endpoint: ${config.openaiEndpoint}`);
-            context.log(`🔧 Using deployment: ${config.deployment}`);
+// ✅ KEEP ALL YOUR EXISTING FUNCTIONS UNCHANGED
+async function processSingleVttFile(context, fileName, outputFormat = 'json') {
+    const processingStartTime = Date.now();
+    context.log(`🎬 Starting VTT processing for: ${fileName}`);
+    
+    // Configuration
+    const config = {
+        tenantId: process.env.TENANT_ID,
+        clientId: process.env.CLIENT_ID,
+        clientSecret: process.env.CLIENT_SECRET,
+        openaiEndpoint: process.env.OPENAI_ENDPOINT,
+        openaiKey: process.env.OPENAI_KEY,
+        deployment: process.env.OPENAI_DEPLOYMENT || 'gpt-4o-text',
+        sharepointDriveId: process.env.SHAREPOINT_DRIVE_ID,
+        sharepointSiteUrl: process.env.SHAREPOINT_SITE_URL
+    };
 
-            // 4. Initialize OpenAI client with correct Azure configuration
-            const openaiClient = new OpenAI({
-                apiKey: config.openaiKey,
-                baseURL: `${config.openaiEndpoint}/openai/deployments/${config.deployment}`,
-                defaultQuery: { 'api-version': '2024-08-01-preview' },
-                defaultHeaders: {
-                    'api-key': config.openaiKey,
-                },
-            });
+    // Validate configuration
+    const requiredConfig = ['tenantId', 'clientId', 'clientSecret', 'openaiKey', 'openaiEndpoint', 'sharepointDriveId'];
+    const missingConfig = requiredConfig.filter(key => !config[key]);
+    
+    if (missingConfig.length > 0) {
+        throw new Error(`Missing required configuration: ${missingConfig.join(', ')}`);
+    }
 
-            context.log('✅ OpenAI client initialized');
+    context.log('✅ Configuration validated');
 
-            // 5. Initialize Microsoft Graph client
-            const credential = new ClientSecretCredential(
-                config.tenantId,
-                config.clientId,
-                config.clientSecret
-            );
+    // Initialize OpenAI client
+    const openaiClient = new OpenAI({
+        apiKey: config.openaiKey,
+        baseURL: `${config.openaiEndpoint}/openai/deployments/${config.deployment}`,
+        defaultQuery: { 'api-version': '2024-08-01-preview' },
+        defaultHeaders: {
+            'api-key': config.openaiKey,
+        },
+    });
 
-            const authProvider = new TokenCredentialAuthenticationProvider(credential, {
-                scopes: ['https://graph.microsoft.com/.default']
-            });
+    // Initialize Microsoft Graph client
+    const credential = new ClientSecretCredential(
+        config.tenantId,
+        config.clientId,
+        config.clientSecret
+    );
 
-            const graphClient = Client.initWithMiddleware({ authProvider });
-            context.log('✅ Graph client initialized');
+    const authProvider = new TokenCredentialAuthenticationProvider(credential, {
+        scopes: ['https://graph.microsoft.com/.default']
+    });
 
-            // 6. Find VTT files in SharePoint
-            context.log(`🔍 Searching for VTT files in drive: ${config.sharepointDriveId}`);
-            
-            const driveItems = await graphClient
-                .api(`/drives/${config.sharepointDriveId}/root/children`)
-                .get();
+    const graphClient = Client.initWithMiddleware({ authProvider });
+    context.log('✅ Graph client initialized');
 
-            context.log(`📋 Found ${driveItems.value.length} items in drive root`);
-            
-            const vttFiles = [];
-            
-            // Search root level
-            for (const item of driveItems.value) {
-                if (item.file && item.name.toLowerCase().endsWith('.vtt')) {
-                    vttFiles.push(item);
-                    context.log(`  📄 VTT: ${item.name} (${item.size} bytes)`);
-                } else if (item.folder) {
-                    context.log(`  📁 Folder: ${item.name}`);
-                    
-                    // Search subfolders for VTT files
-                    try {
-                        const folderItems = await graphClient
-                            .api(`/drives/${config.sharepointDriveId}/items/${item.id}/children`)
-                            .get();
-                        
-                        for (const subItem of folderItems.value) {
-                            if (subItem.file && subItem.name.toLowerCase().endsWith('.vtt')) {
-                                vttFiles.push(subItem);
-                                context.log(`    📄 VTT in ${item.name}: ${subItem.name} (${subItem.size} bytes)`);
-                            }
-                        }
-                    } catch (folderError) {
-                        context.log(`    ❌ Cannot access folder ${item.name}: ${folderError.message}`);
+    // Find VTT files in SharePoint
+    context.log(`🔍 Searching for VTT files in drive: ${config.sharepointDriveId}`);
+    
+    const driveItems = await graphClient
+        .api(`/drives/${config.sharepointDriveId}/root/children`)
+        .get();
+
+    const vttFiles = [];
+    
+    // Search root level and folders
+    for (const item of driveItems.value) {
+        if (item.file && item.name.toLowerCase().endsWith('.vtt')) {
+            vttFiles.push(item);
+            context.log(`  📄 VTT: ${item.name} (${item.size} bytes)`);
+        } else if (item.folder) {
+            try {
+                const folderItems = await graphClient
+                    .api(`/drives/${config.sharepointDriveId}/items/${item.id}/children`)
+                    .get();
+                
+                for (const subItem of folderItems.value) {
+                    if (subItem.file && subItem.name.toLowerCase().endsWith('.vtt')) {
+                        vttFiles.push(subItem);
+                        context.log(`    📄 VTT in ${item.name}: ${subItem.name} (${subItem.size} bytes)`);
                     }
                 }
+            } catch (folderError) {
+                context.log(`    ❌ Cannot access folder ${item.name}: ${folderError.message}`);
             }
+        }
+    }
 
-            context.log(`🎬 Total VTT files found: ${vttFiles.length}`);
+    context.log(`🎬 Total VTT files found: ${vttFiles.length}`);
 
-            // 7. Find target file
-            let targetFile = vttFiles.find(file => 
-                file.name.toLowerCase() === fileName.toLowerCase()
-            );
+    // Find target file
+    let targetFile = vttFiles.find(file => 
+        file.name.toLowerCase() === fileName.toLowerCase()
+    );
 
-            if (!targetFile) {
-                // Try partial match
-                targetFile = vttFiles.find(file => 
-                    file.name.toLowerCase().includes(fileName.replace('.vtt', '').toLowerCase())
-                );
-                
-                if (targetFile) {
-                    context.log(`📄 Found partial match: ${targetFile.name}`);
-                }
-            }
+    if (!targetFile) {
+        // Try partial match
+        targetFile = vttFiles.find(file => 
+            file.name.toLowerCase().includes(fileName.replace('.vtt', '').toLowerCase())
+        );
+    }
 
-            if (!targetFile) {
-                const availableFiles = vttFiles.map(f => f.name).slice(0, 10).join(', ');
-                throw new Error(`File not found: ${fileName}. Available VTT files: ${availableFiles}${vttFiles.length > 10 ? '...' : ''}`);
-            }
+    if (!targetFile) {
+        const availableFiles = vttFiles.map(f => f.name).slice(0, 10).join(', ');
+        throw new Error(`File not found: ${fileName}. Available VTT files: ${availableFiles}${vttFiles.length > 10 ? '...' : ''}`);
+    }
 
-            context.log(`✅ Found file: ${targetFile.name} (${targetFile.size} bytes)`);
+    context.log(`✅ Found file: ${targetFile.name} (${targetFile.size} bytes)`);
 
-            // 8. Download VTT file content using two-step process
-            context.log('📥 Downloading VTT file content...');
-            
-            // Get download URL
-            const downloadUrlResponse = await graphClient
-                .api(`/drives/${config.sharepointDriveId}/items/${targetFile.id}`)
-                .select('@microsoft.graph.downloadUrl')
-                .get();
+    // Download VTT file content
+    const downloadUrlResponse = await graphClient
+        .api(`/drives/${config.sharepointDriveId}/items/${targetFile.id}`)
+        .select('@microsoft.graph.downloadUrl')
+        .get();
 
-            const downloadUrl = downloadUrlResponse['@microsoft.graph.downloadUrl'];
-            context.log('✅ Got download URL');
+    const downloadUrl = downloadUrlResponse['@microsoft.graph.downloadUrl'];
+    const response = await fetch(downloadUrl);
+    
+    if (!response.ok) {
+        throw new Error(`Download failed: ${response.status} ${response.statusText}`);
+    }
 
-            // Download content using fetch
-            const response = await fetch(downloadUrl);
-            
-            if (!response.ok) {
-                throw new Error(`Download failed: ${response.status} ${response.statusText}`);
-            }
+    let vttContent = await response.text();
+    context.log(`✅ Downloaded content: ${vttContent.length} characters`);
 
-            let vttContent = await response.text();
-            context.log(`✅ Downloaded content: ${vttContent.length} characters`);
+    // Handle large files
+    const MAX_TOKENS = 8000;
+    const CHARS_PER_TOKEN = 4;
+    const maxChars = MAX_TOKENS * CHARS_PER_TOKEN;
 
-            // Log content preview for verification
-            const previewLines = vttContent.split('\n').slice(0, 5);
-            context.log('Content preview:', previewLines);
+    let truncated = false;
+    const originalLength = vttContent.length;
 
-            // 9. Process content for OpenAI (handle large files)
-            const MAX_TOKENS = 8000;
-            const CHARS_PER_TOKEN = 4;
-            const maxChars = MAX_TOKENS * CHARS_PER_TOKEN;
+    if (vttContent.length > maxChars) {
+        vttContent = vttContent.substring(0, maxChars);
+        truncated = true;
+        context.log(`⚠️ Content truncated from ${originalLength} to ${vttContent.length} characters`);
+    }
 
-            let truncated = false;
-            const originalLength = vttContent.length;
+    // Parse VTT timestamps
+    const timestampBlocks = parseVttTimestamps(vttContent);
+    context.log(`✅ Parsed ${timestampBlocks.length} timestamp blocks`);
 
-            if (vttContent.length > maxChars) {
-                vttContent = vttContent.substring(0, maxChars);
-                truncated = true;
-                context.log(`⚠️ Content truncated from ${originalLength} to ${vttContent.length} characters`);
-            }
+    // Extract metadata
+    const metadata = extractMeetingMetadata(vttContent, targetFile, config.sharepointSiteUrl);
+    context.log(`Meeting: ${metadata.title}`);
 
-            // 10. Parse VTT timestamps (NEW FEATURE)
-            context.log('🔍 Parsing VTT timestamps...');
-            const timestampBlocks = parseVttTimestamps(vttContent);
-            context.log(`✅ Parsed ${timestampBlocks.length} timestamp blocks`);
+    // Generate AI summary
+    context.log('🤖 Generating AI-powered meeting summary...');
 
-            // 11. Extract metadata with NOTE parsing (NEW FEATURE)
-            const metadata = extractMeetingMetadata(vttContent, targetFile, config.sharepointSiteUrl);
-            context.log(`Meeting: ${metadata.title}`);
-
-            // 12. Generate AI summary with Dynamics 365 CRM training focus (ENHANCED)
-            context.log('🤖 Generating AI-powered meeting summary...');
-
-            const trainingPrompt = `You are an expert in Dynamics 365 CRM training analysis. Analyze this meeting transcript and provide:
+    const trainingPrompt = `You are an expert in Dynamics 365 CRM training analysis. Analyze this meeting transcript and provide:
 
 1. **Training Topics Covered**: Identify specific Dynamics 365 CRM features, functions, or processes that were taught or discussed.
 
@@ -229,77 +323,211 @@ Meeting Title: ${metadata.title}
 Transcript Content:
 ${vttContent}`;
 
-            const completion = await openaiClient.chat.completions.create({
-                model: config.deployment,
-                messages: [
-                    {
-                        role: "user",
-                        content: trainingPrompt
-                    }
-                ],
-                max_tokens: 2000,
-                temperature: 0.3
-            });
+    const completion = await openaiClient.chat.completions.create({
+        model: config.deployment,
+        messages: [
+            {
+                role: "user",
+                content: trainingPrompt
+            }
+        ],
+        max_tokens: 2000,
+        temperature: 0.3
+    });
 
-            const summary = completion.choices[0].message.content;
-            context.log('✅ AI summary generated successfully');
+    const summary = completion.choices[0].message.content;
+    context.log('✅ AI summary generated successfully');
 
-            // 13. Extract key points with timestamps (NEW FEATURE)
-            const keyPoints = extractKeyPoints(summary, timestampBlocks, metadata.videoUrl);
+    // Extract key points with timestamps
+    const keyPoints = extractKeyPoints(summary, timestampBlocks, metadata.videoUrl);
 
-            // 14. Format final response with enhanced structure
-            const result = {
-                success: true,
-                meetingTitle: metadata.title,
-                date: metadata.date,
-                videoUrl: metadata.videoUrl,
-                file: fileName,
-                actualFile: targetFile.name,
-                summary: summary,
-                keyPoints: keyPoints,
-                timestampBlocks: timestampBlocks.slice(0, 10), // First 10 for reference
-                metadata: {
-                    endpoint: config.openaiEndpoint,
-                    deployment: config.deployment,
-                    fileSize: targetFile.size,
-                    originalContentLength: originalLength,
-                    processedContentLength: vttContent.length,
-                    truncated: truncated,
-                    estimatedTokens: Math.ceil(vttContent.length / CHARS_PER_TOKEN),
-                    totalTimestamps: timestampBlocks.length,
-                    totalKeyPoints: keyPoints.length,
-                    processedAt: new Date().toISOString(),
-                    processingTimeMs: Date.now() - startTime
-                }
-            };
-
-            return {
-                status: 200,
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify(result)
-            };
-
-        } catch (error) {
-            context.log.error('❌ Function execution failed:', error.message);
-            context.log.error('Stack trace:', error.stack);
-            
-            return {
-                status: 500,
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({
-                    error: 'VTT processing failed',
-                    message: error.message,
-                    endpoint: process.env.OPENAI_ENDPOINT || 'not configured',
-                    deployment: process.env.OPENAI_DEPLOYMENT || 'not configured',
-                    timestamp: new Date().toISOString()
-                })
-            };
+    // Create base result
+    const baseResult = {
+        success: true,
+        meetingTitle: metadata.title,
+        date: metadata.date,
+        videoUrl: metadata.videoUrl,
+        file: fileName,
+        actualFile: targetFile.name,
+        summary: summary,
+        keyPoints: keyPoints,
+        timestampBlocks: timestampBlocks.slice(0, 10), // First 10 for reference
+        metadata: {
+            endpoint: config.openaiEndpoint,
+            deployment: config.deployment,
+            fileSize: targetFile.size,
+            originalContentLength: originalLength,
+            processedContentLength: vttContent.length,
+            truncated: truncated,
+            estimatedTokens: Math.ceil(vttContent.length / CHARS_PER_TOKEN),
+            totalTimestamps: timestampBlocks.length,
+            totalKeyPoints: keyPoints.length,
+            processedAt: new Date().toISOString(),
+            processingTimeMs: Date.now() - processingStartTime
         }
-    }
-});
+    };
 
-// NEW: Parse VTT timestamps
+    // Apply output formatting
+    return await applyOutputFormat(context, baseResult, outputFormat);
+}
+
+// ✅ KEEP ALL YOUR HELPER FUNCTIONS UNCHANGED
+async function applyOutputFormat(context, result, outputFormat) {
+    switch (outputFormat.toLowerCase()) {
+        case 'html':
+            return generateHtmlOutput(context, result);
+        case 'markdown':
+            return generateMarkdownOutput(context, result);
+        case 'summary':
+            return generateSummaryOutput(context, result);
+        case 'json':
+        default:
+            return result;
+    }
+}
+
+function generateHtmlOutput(context, result) {
+    const { meetingTitle, keyPoints, summary, metadata } = result;
+    
+    const html = `<!DOCTYPE html>
+<html>
+<head>
+    <title>Meeting Analysis: ${meetingTitle}</title>
+    <meta charset="UTF-8">
+    <style>
+        body { font-family: Arial, sans-serif; margin: 40px; line-height: 1.6; color: #333; }
+        .header { text-align: center; border-bottom: 2px solid #007acc; padding-bottom: 20px; margin-bottom: 30px; }
+        .summary { background: #f5f5f5; padding: 20px; border-radius: 8px; margin: 20px 0; }
+        .key-points { margin: 30px 0; }
+        .key-point { margin: 15px 0; padding: 15px; border-left: 4px solid #007acc; background: #fafafa; border-radius: 4px; }
+        .timestamp { font-weight: bold; color: #007acc; font-family: monospace; }
+        .speaker { font-style: italic; color: #666; margin-left: 10px; }
+        .title { font-weight: bold; margin: 5px 0; }
+        .video-link { color: #007acc; text-decoration: none; font-size: 14px; }
+        .video-link:hover { text-decoration: underline; }
+        .metadata { background: #e8f4f8; padding: 20px; border-radius: 8px; margin-top: 30px; }
+        h1 { color: #007acc; margin: 0; }
+        h2 { color: #005a9e; border-bottom: 1px solid #ddd; padding-bottom: 10px; }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>Meeting Analysis: ${meetingTitle}</h1>
+        <p><strong>Generated:</strong> ${new Date().toLocaleDateString()} at ${new Date().toLocaleTimeString()}</p>
+        <p><strong>Processing Time:</strong> ${metadata.processingTimeMs}ms | <strong>Key Points:</strong> ${keyPoints.length}</p>
+    </div>
+    
+    <div class="summary">
+        <h2>📋 Executive Summary</h2>
+        <p>${summary.replace(/\n/g, '<br>')}</p>
+    </div>
+    
+    <div class="key-points">
+        <h2>🎯 Key Discussion Points (${keyPoints.length} items)</h2>
+        ${keyPoints.map((point, index) => `
+            <div class="key-point">
+                <div class="timestamp">${point.timestamp}</div>
+                <span class="speaker">${point.speaker}</span>
+                <div class="title">${point.title}</div>
+                <a href="${point.videoLink}" class="video-link" target="_blank">🎥 Watch this moment in video</a>
+            </div>
+        `).join('')}
+    </div>
+    
+    <div class="metadata">
+        <h3>📊 Processing Information</h3>
+        <p><strong>File:</strong> ${metadata.fileSize} bytes | <strong>Timestamps:</strong> ${metadata.totalTimestamps} | <strong>Processing:</strong> ${metadata.processingTimeMs}ms</p>
+    </div>
+    
+    <footer style="text-align: center; margin-top: 40px; padding-top: 20px; border-top: 1px solid #ddd; color: #666;">
+        <p><em>Generated by Azure Functions VTT Meeting Transcript Processor</em></p>
+        <p>File: ${result.actualFile} | Processed: ${metadata.processedAt}</p>
+    </footer>
+</body>
+</html>`;
+    
+    return {
+        ...result,
+        outputFormat: 'html',
+        htmlContent: html,
+        downloadable: {
+            contentType: 'text/html',
+            fileName: `${meetingTitle.replace(/[^a-z0-9]/gi, '_')}_Analysis.html`,
+            content: html,
+            size: html.length
+        }
+    };
+}
+
+function generateMarkdownOutput(context, result) {
+    const { meetingTitle, keyPoints, summary, metadata } = result;
+    
+    const markdown = `# Meeting Analysis: ${meetingTitle}
+
+**Generated:** ${new Date().toLocaleDateString()} at ${new Date().toLocaleTimeString()}  
+**Processing Time:** ${metadata.processingTimeMs}ms | **Key Points:** ${keyPoints.length}
+
+## 📋 Executive Summary
+
+${summary}
+
+## 🎯 Key Discussion Points (${keyPoints.length} items)
+
+${keyPoints.map((point, index) => `### ${index + 1}. ${point.timestamp} - ${point.title}
+
+**Speaker:** ${point.speaker}  
+**Video Link:** [🎥 Watch this moment](${point.videoLink})
+
+---`).join('\n\n')}
+
+## 📊 Processing Information
+
+- **File Size:** ${Math.round(metadata.fileSize / 1024)}KB
+- **Timestamps:** ${metadata.totalTimestamps}
+- **Processing Time:** ${metadata.processingTimeMs}ms
+
+---
+
+**File:** ${result.actualFile} | **Processed:** ${metadata.processedAt}  
+*Generated by Azure Functions VTT Meeting Transcript Processor*`;
+    
+    return {
+        ...result,
+        outputFormat: 'markdown',
+        markdownContent: markdown,
+        downloadable: {
+            contentType: 'text/markdown',
+            fileName: `${meetingTitle.replace(/[^a-z0-9]/gi, '_')}_Analysis.md`,
+            content: markdown,
+            size: markdown.length
+        }
+    };
+}
+
+function generateSummaryOutput(context, result) {
+    const { meetingTitle, keyPoints, summary, metadata } = result;
+    
+    return {
+        success: true,
+        meetingTitle: meetingTitle,
+        summary: summary,
+        keyPointsCount: keyPoints.length,
+        topKeyPoints: keyPoints.slice(0, 5).map(point => ({
+            timestamp: point.timestamp,
+            title: point.title,
+            speaker: point.speaker,
+            videoLink: point.videoLink
+        })),
+        processingTimeMs: metadata.processingTimeMs,
+        fileSize: metadata.fileSize,
+        outputFormat: 'summary',
+        processedAt: metadata.processedAt
+    };
+}
+
 function parseVttTimestamps(vttContent) {
+    if (!vttContent) return [];
+    
     const contentBlocks = [];
     const lines = vttContent.split('\n');
     let currentBlock = null;
@@ -337,7 +565,6 @@ function parseVttTimestamps(vttContent) {
     return contentBlocks;
 }
 
-// NEW: Extract meeting metadata with NOTE parsing
 function extractMeetingMetadata(vttContent, fileMetadata, sharepointSiteUrl) {
     // Extract meeting title from NOTE line
     const noteMatch = vttContent.match(/NOTE\s+(.+)/);
@@ -357,11 +584,12 @@ function extractMeetingMetadata(vttContent, fileMetadata, sharepointSiteUrl) {
     };
 }
 
-// NEW: Extract key points with video links
 function extractKeyPoints(summary, timestampBlocks, videoUrl) {
+    if (!summary || !timestampBlocks) return [];
+    
     const keyPoints = [];
     
-    // Simple extraction - match summary sections to timestamps
+    // Extract titles with markdown formatting
     const summaryLines = summary.split('\n').filter(line => 
         line.trim().length > 0 && (line.includes('**') || line.includes('###'))
     );
@@ -386,8 +614,25 @@ function extractKeyPoints(summary, timestampBlocks, videoUrl) {
     return keyPoints;
 }
 
-// NEW: Convert timestamp to video link format
 function createVideoLink(timestamp, videoUrl) {
     const [hours, minutes, seconds] = timestamp.split(':');
     return `${videoUrl}#t=${hours}h${minutes}m${seconds}s`;
+}
+
+function chunkArray(array, chunkSize) {
+    const chunks = [];
+    for (let i = 0; i < array.length; i += chunkSize) {
+        chunks.push(array.slice(i, i + chunkSize));
+    }
+    return chunks;
+}
+
+// Export functions for testing
+if (typeof module !== 'undefined' && module.exports) {
+    module.exports = {
+        parseVttTimestamps,
+        extractMeetingMetadata,
+        extractKeyPoints,
+        createVideoLink
+    };
 }
