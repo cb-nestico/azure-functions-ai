@@ -2,15 +2,16 @@
   "name": "azure-functions-vtt-processor",
   "version": "2.0.0",
   "description": "VTT Meeting Transcript Processor",
-  "main": "src/functions/ProcessVttFile/index.js",
+  "main": "index.js",
   "scripts": {
     "start": "func start",
     "test": "jest"
   },
   "dependencies": {
     "@azure/functions": "^4.0.0",
-    "@azure/identity": "^4.0.0",
-    "@microsoft/microsoft-graph-client": "^3.0.0",
-    "openai": "^4.0.0"
+    "@azure/identity": "^4.11.1",
+    "@microsoft/microsoft-graph-client": "^3.0.7",
+    "node-fetch": "^2.7.0",
+    "openai": "^4.104.0"
   }
 }

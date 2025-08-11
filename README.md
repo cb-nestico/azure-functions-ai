@@ -1267,3 +1267,80 @@ Write-Host "✅ Success: $($response.meetingTitle) - $($response.keyPoints.Lengt
 ---
 
 **The Azure Function is now production-ready and fully operational. Tomorrow’s session will focus on repository security, comprehensive validation, and planning the next phase of enhancements.**
+
+
+
+
+
+============================== August 6 ===================================
+### 🧪 Test Results & Troubleshooting
+
+| Scenario                | Result/Notes                                                                 |
+|-------------------------|------------------------------------------------------------------------------|
+| Standard File           | Success. 13 key points, 16s processing.                                      |
+| Non-Existent File       | Error: "File not found: NoSuchFile.vtt".                                     |
+| Batch Processing        | Exclaimer7.vtt: Success. AnotherFile.vtt: Error (not found).                 |
+| Invalid Key             | 401 Unauthorized.                                                            |
+
+**Performance:**  
+- Large file (130KB): ~16s  
+- Small file: ~3s
+
+**Troubleshooting:**  
+- If you see "File not found", check the SharePoint drive and filename.
+- If you see 401 errors, verify the function key.
+
+
+=============================================================================================== Friday AUGUST 8, 2025 ===============
+# MeetingTranscriptProcessor – Session Summary (2025-08-08)
+
+## What Was Done Today
+
+### 1. **Project Structure & Azure Functions Discovery**
+- **Reviewed and corrected folder structure** to ensure Azure Functions runtime can discover the HTTP trigger.
+- **Root-level entry file (`index.js`)** was created at the project root (`c:\AZURE FUNCTIONS-AI\index.js`) to register the function using the v4 programming model.
+- **Function code remains in** `src/functions/ProcessVttFile/index.js` (no relocation required).
+- **Shim function.json** added at `c:\AZURE FUNCTIONS-AI\ProcessVttFile\function.json` to ensure Azure Portal reliably lists the function.
+
+### 2. **Code Improvements**
+- **Added helper functions** for safe JSON parsing and fallback key point extraction to improve robustness.
+- **Refactored AI response parsing** to extract summary and key points, with fallback logic if the AI output is incomplete.
+- **Cleaned up HTML response logic** to ensure only HTML is returned for inline requests, and JSON for API calls.
+
+### 3. **Local Testing**
+- **Resolved port conflicts** and successfully ran the Azure Functions host locally on a custom port.
+- **Tested the function endpoint locally** using PowerShell, confirming HTML output and log details.
+
+### 4. **Azure Deployment**
+- **Deployed from the project root** using VS Code Azure Tools.
+- **Restarted and synced triggers** in Azure Portal.
+- **Verified deployment using Kudu and Azure CLI** to check for correct file placement and function discovery.
+
+## Pending for Next Session
+
+### 1. **Azure Portal Verification**
+- **Function not yet visible in Azure Portal** under the Functions tab. Needs further troubleshooting:
+  - Confirm correct deployment from the project root.
+  - Ensure both `index.js` and `ProcessVttFile/function.json` are present in `/site/wwwroot` via Kudu.
+  - Check Azure Log Stream for any startup or discovery errors.
+
+### 2. **Key Points Extraction**
+- **Key Discussion Points are empty or minimal.**
+  - Review and refine AI prompt or fallback extraction logic.
+  - Test with different VTT files to ensure robust key point generation.
+
+### 3. **Production Testing**
+- **Test the deployed function in Azure** using the live endpoint and verify both HTML and JSON outputs.
+- **Rotate and secure any exposed secrets** (e.g., storage account keys) in Azure App Settings.
+
+### 4. **Documentation & Automation**
+- **Update README.md** with troubleshooting steps, deployment commands, and endpoint usage examples.
+- **Consider adding automated tests** and CI/CD pipeline for future deployments.
+
+---
+
+**Next Steps:**
+1. Troubleshoot Azure Portal function discovery.
+2. Refine key point extraction logic.
+3. Test and validate production endpoints.
+4. Update documentation and secure configuration.
