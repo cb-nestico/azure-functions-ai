@@ -19,7 +19,6 @@ app.http('ProcessVttFile', {
         context.log('🎯 ProcessVttFile function triggered');
 
         try {
-            // Parse request - handle both batch and single file processing
             let fileName, batchMode = false, fileNames = [], outputFormat = 'json';
 
             if (request.method === 'GET') {
@@ -47,7 +46,6 @@ app.http('ProcessVttFile', {
                 }
             }
 
-            // Determine processing mode
             if (batchMode && fileNames.length > 1) {
                 context.log(`🔄 Starting batch processing for ${fileNames.length} files`);
                 return await processBatchFiles(context, fileNames, outputFormat);
@@ -83,6 +81,15 @@ app.http('ProcessVttFile', {
 async function processSingleFile(context, fileName, outputFormat = 'json') {
     const result = await processSingleVttFile(context, fileName, outputFormat);
     const status = result && result.status ? result.status : 200;
+
+    if (outputFormat.toLowerCase() === 'html' && result.htmlContent) {
+        return {
+            status: status,
+            headers: { 'Content-Type': 'text/html' },
+            body: result.htmlContent
+        };
+    }
+
     return {
         status: status,
         headers: { 'Content-Type': 'application/json' },
@@ -95,7 +102,6 @@ async function processBatchFiles(context, fileNames, outputFormat = 'json') {
     const results = [];
     const batchStartTime = Date.now();
 
-    // Sequential during troubleshooting
     const concurrencyLimit = 1;
     const batches = chunkArray(fileNames, concurrencyLimit);
 
@@ -135,7 +141,6 @@ async function processBatchFiles(context, fileNames, outputFormat = 'json') {
         }
     } catch (err) {
         context.log.error('❌ Unhandled error in processBatchFiles:', err);
-        // Do not fail the whole request; return what we have
     }
 
     const batchTotalTime = Date.now() - batchStartTime;
@@ -189,7 +194,6 @@ async function processSingleVttFile(context, fileName, outputFormat = 'json') {
             throw configError;
         }
 
-        // Validate configuration
         const requiredConfig = ['tenantId', 'clientId', 'clientSecret', 'openaiKey', 'openaiEndpoint', 'sharepointDriveId'];
         const missingConfig = requiredConfig.filter(key => !config[key]);
         if (missingConfig.length > 0) {
@@ -204,7 +208,6 @@ async function processSingleVttFile(context, fileName, outputFormat = 'json') {
         }
         context.log('✅ Configuration validated');
 
-        // Initialize OpenAI client
         let openaiClient;
         try {
             openaiClient = new OpenAI({
@@ -219,7 +222,6 @@ async function processSingleVttFile(context, fileName, outputFormat = 'json') {
             throw openaiError;
         }
 
-        // Initialize Microsoft Graph client
         let graphClient;
         try {
             const credential = new ClientSecretCredential(
@@ -237,7 +239,6 @@ async function processSingleVttFile(context, fileName, outputFormat = 'json') {
             throw graphError;
         }
 
-        // Find VTT files in SharePoint
         let driveItems;
         try {
             context.log(`🔍 Searching for VTT files in drive: ${config.sharepointDriveId}`);
@@ -276,7 +277,6 @@ async function processSingleVttFile(context, fileName, outputFormat = 'json') {
         }
         context.log(`🎬 Total VTT files found: ${vttFiles.length}`);
 
-        // Find target file
         context.log(`🔎 Selecting target file for request: ${fileName}`);
         let targetFile = vttFiles.find(file => file.name.toLowerCase() === fileName.toLowerCase());
         if (!targetFile) {
@@ -298,12 +298,10 @@ async function processSingleVttFile(context, fileName, outputFormat = 'json') {
         }
         context.log(`✅ Found file: ${targetFile.name} (${targetFile.size} bytes)`);
 
-        // Download file content (refresh download URL and log HTTP status)
         let vttContent;
         try {
             context.log(`🔎 Fetching file details for download URL (id: ${targetFile.id})`);
             const fileDetails = await graphClient
-                // Note: do NOT encode the id here; Graph expects the raw driveItem id
                 .api(`/drives/${config.sharepointDriveId}/items/${targetFile.id}`)
                 .select('@microsoft.graph.downloadUrl,name,size,id')
                 .get();
@@ -348,7 +346,6 @@ async function processSingleVttFile(context, fileName, outputFormat = 'json') {
             };
         }
 
-        // Parse VTT timestamps
         let timestampBlocks;
         try {
             timestampBlocks = parseVttTimestamps(vttContent);
@@ -364,7 +361,6 @@ async function processSingleVttFile(context, fileName, outputFormat = 'json') {
             };
         }
 
-        // Extract meeting metadata
         let meetingMetadata;
         try {
             meetingMetadata = extractMeetingMetadata(vttContent, targetFile, config.sharepointSiteUrl);
@@ -380,49 +376,90 @@ async function processSingleVttFile(context, fileName, outputFormat = 'json') {
             };
         }
 
-        // Generate summary using OpenAI
-        let summary;
+        const transcriptText = timestampBlocks.map(b => `${b.timestamp || ""} ${b.content || ""}`).join("\n");
+
+        // --- Refined Key Point Extraction Logic ---
+        const aiPrompt = `
+You are an expert meeting analyst. Given the following transcript, extract:
+1. Executive summary (2-3 sentences).
+2. Key discussion points as a numbered JSON array, each with:
+   - "title": short topic or action item
+   - "timestamp": HH:MM:SS if available
+   - "speaker": name if available
+   - "videoLink": clickable link using the timestamp and video URL (format: [Link](videoUrl#t=HHhMMmSSs))
+Format your response as:
+{
+  "summary": "...",
+  "keyPoints": [
+    { "title": "...", "timestamp": "...", "speaker": "...", "videoLink": "..." },
+    ...
+  ]
+}
+Transcript:
+${transcriptText}
+`;
+
+        let aiParsed = {};
+        let summary = "";
+        let keyPoints = [];
         try {
-            context.log('🧠 Generating summary with OpenAI...');
             const aiResponse = await openaiClient.chat.completions.create({
                 model: config.deployment,
-                messages: [
-                    { role: "system", content: "You are an expert meeting transcript summarizer." },
-                    { role: "user", content: vttContent }
-                ],
-                max_tokens: 2048,
-                temperature: 0.3
+                messages: [{ role: 'user', content: aiPrompt }],
+                temperature: 0.2,
+                max_tokens: 1024
             });
-            summary = aiResponse.choices[0].message.content;
-            context.log('✅ OpenAI summary generated');
-        } catch (aiError) {
-            context.log.error('❌ Error generating summary with OpenAI:', aiError?.message || aiError);
+            context.log('🧠 Raw AI response:', aiResponse);
+
+            let aiContent = aiResponse.choices?.[0]?.message?.content;
+            try {
+                aiParsed = typeof aiContent === 'string' ? JSON.parse(aiContent) : aiContent;
+            } catch (err) {
+                context.log.error('❌ Failed to parse AI response:', err, aiContent);
+                aiParsed = {};
+            }
+            context.log('🧠 Parsed AI response:', aiParsed);
+
+            summary = aiParsed.summary || "";
+            keyPoints = Array.isArray(aiParsed.keyPoints) ? aiParsed.keyPoints.filter(Boolean) : [];
+        } catch (err) {
+            context.log.error('❌ Error calling OpenAI:', err);
+            summary = "";
+            keyPoints = [];
+        }
+
+        if (keyPoints.length > 0) {
+            keyPoints = keyPoints.map(point => ({
+                ...point,
+                videoLink: point.timestamp && meetingMetadata.videoUrl
+                    ? `${meetingMetadata.videoUrl}#t=${(point.timestamp || '').replace(/:/g, 'h').replace(/h(\d{2})$/, 'm$1s')}`
+                    : ""
+            }));
+        }
+
+        if (keyPoints.length < 3) {
+            const fallback = deriveKeyPointsFallbackFromText(transcriptText);
+            keyPoints = fallback.map((point, idx) => ({
+                title: point,
+                timestamp: timestampBlocks[idx]?.timestamp || "",
+                speaker: timestampBlocks[idx]?.speaker || "",
+                videoLink: timestampBlocks[idx]?.timestamp && meetingMetadata.videoUrl
+                    ? `${meetingMetadata.videoUrl}#t=${(timestampBlocks[idx].timestamp || '').replace(/:/g, 'h').replace(/h(\d{2})$/, 'm$1s')}`
+                    : ""
+            }));
+        }
+
+        if (!summary || !keyPoints) {
+            context.log.error('❌ Missing summary or keyPoints before formatting output');
             return {
                 success: false,
                 status: 500,
-                error: `Error generating summary with OpenAI: ${aiError?.message || aiError}`,
+                error: 'Missing summary or keyPoints before formatting output',
                 processedAt: new Date().toISOString(),
                 processingTimeMs: Date.now() - processingStartTime
             };
         }
 
-        // Extract key points
-        let keyPoints;
-        try {
-            keyPoints = extractKeyPoints(summary, timestampBlocks, meetingMetadata.videoUrl);
-            context.log(`✅ Extracted key points: ${keyPoints.length}`);
-        } catch (kpError) {
-            context.log.error('❌ Error extracting key points:', kpError?.message || kpError);
-            return {
-                success: false,
-                status: 500,
-                error: `Error extracting key points: ${kpError?.message || kpError}`,
-                processedAt: new Date().toISOString(),
-                processingTimeMs: Date.now() - processingStartTime
-            };
-        }
-
-        // Prepare metadata
         const metadata = {
             endpoint: config.openaiEndpoint,
             deployment: config.deployment,
@@ -437,7 +474,6 @@ async function processSingleVttFile(context, fileName, outputFormat = 'json') {
             processingTimeMs: Date.now() - processingStartTime
         };
 
-        // Format output
         let result;
         try {
             result = {
@@ -508,12 +544,11 @@ function generateHtmlOutput(context, result) {
         .header { text-align: center; border-bottom: 2px solid #007acc; padding-bottom: 20px; margin-bottom: 30px; }
         .summary { background: #f5f5f5; padding: 20px; border-radius: 8px; margin: 20px 0; }
         .key-points { margin: 30px 0; }
-        .key-point { margin: 15px 0; padding: 15px; border-left: 4px solid #007acc; background: #fafafa; border-radius: 4px; }
-        .timestamp { font-weight: bold; color: #007acc; font-family: monospace; }
-        .speaker { font-style: italic; color: #666; margin-left: 10px; }
-        .title { font-weight: bold; margin: 5px 0; }
-        .video-link { color: #007acc; text-decoration: none; font-size: 14px; }
-        .video-link:hover { text-decoration: underline; }
+        ul.keypoint-list { margin: 0 0 0 20px; padding: 0; }
+        li.keypoint-item { margin-bottom: 14px; padding: 10px 0; border-bottom: 1px solid #eee; }
+        .timestamp { font-weight: bold; color: #007acc; font-family: monospace; margin-right: 10px; }
+        .speaker { font-style: italic; color: #666; margin-right: 10px; }
+        .title { font-weight: bold; }
         .metadata { background: #e8f4f8; padding: 20px; border-radius: 8px; margin-top: 30px; }
         h1 { color: #007acc; margin: 0; }
         h2 { color: #005a9e; border-bottom: 1px solid #ddd; padding-bottom: 10px; }
@@ -531,14 +566,18 @@ function generateHtmlOutput(context, result) {
     </div>
     <div class="key-points">
         <h2>🎯 Key Discussion Points (${keyPoints.length} items)</h2>
-        ${keyPoints.map((point) => `
-            <div class="key-point">
-                <div class="timestamp">${point.timestamp}</div>
-                <span class="speaker">${point.speaker}</span>
-                <div class="title">${point.title}</div>
-                <a href="${point.videoLink}" class="video-link" target="_blank">🎥 Watch this moment in video</a>
-            </div>
-        `).join('')}
+        <ul class="keypoint-list">
+            ${keyPoints
+                .filter(point => point.title && point.title.trim() !== '')
+                .map(point => `
+                <li class="keypoint-item">
+                    ${point.timestamp ? `<span class="timestamp">${point.timestamp}</span>` : ''}
+                    ${point.speaker ? `<span class="speaker">${point.speaker}</span>` : ''}
+                    <span class="title">${point.title}</span>
+                    ${point.videoLink ? `<a class="video-link" href="${point.videoLink}" target="_blank">🔗 Video</a>` : ''}
+                </li>
+            `).join('')}
+        </ul>
     </div>
     <div class="metadata">
         <h3>📊 Processing Information</h3>
@@ -552,7 +591,7 @@ function generateHtmlOutput(context, result) {
 </html>`;
 
     return {
-        ...result,
+        success: true,
         outputFormat: 'html',
         htmlContent: html,
         downloadable: {
@@ -580,8 +619,7 @@ ${summary}
 
 ${keyPoints.map((point, index) => `### ${index + 1}. ${point.timestamp} - ${point.title}
 
-**Speaker:** ${point.speaker}  
-**Video Link:** [🎥 Watch this moment](${point.videoLink})
+**Speaker:** ${point.speaker}
 
 ---`).join('\n\n')}
 
@@ -620,14 +658,29 @@ function generateSummaryOutput(context, result) {
         topKeyPoints: keyPoints.slice(0, 5).map(point => ({
             timestamp: point.timestamp,
             title: point.title,
-            speaker: point.speaker,
-            videoLink: point.videoLink
+            speaker: point.speaker
         })),
         processingTimeMs: metadata.processingTimeMs,
         fileSize: metadata.fileSize,
         outputFormat: 'summary',
         processedAt: metadata.processedAt
     };
+}
+
+function deriveKeyPointsFallbackFromText(text) {
+    if (!text) return [];
+    const bullets = Array.from(new Set(
+        text.split(/\r?\n+/)
+            .filter(l => /^\s*[-•–]/.test(l))
+            .map(l => l.replace(/^\s*[-•–]\s*/, "").trim())
+            .filter(Boolean)
+    ));
+    if (bullets.length >= 3) return bullets.slice(0, 12);
+    return text
+        .split(/(?<=[.!?])\s+/)
+        .map(s => s.trim())
+        .filter(s => /^[A-Z][a-z]+/.test(s) || /action|decision|important|key/i.test(s))
+        .slice(0, 8);
 }
 
 function parseVttTimestamps(vttContent) {
@@ -640,7 +693,6 @@ function parseVttTimestamps(vttContent) {
     for (let i = 0; i < lines.length; i++) {
         const line = lines[i].trim();
 
-        // Check if line contains timestamp
         const timestampMatch = line.match(/(\d{2}:\d{2}:\d{2})\.\d{3}/);
         if (timestampMatch) {
             if (currentBlock) contentBlocks.push(currentBlock);
@@ -677,36 +729,6 @@ function extractMeetingMetadata(vttContent, fileMetadata, sharepointSiteUrl) {
     };
 }
 
-function extractKeyPoints(summary, timestampBlocks, videoUrl) {
-    if (!summary || !timestampBlocks) return [];
-    const keyPoints = [];
-    const summaryLines = summary.split('\n').filter(line =>
-        line.trim().length > 0 && (line.includes('**') || line.includes('###'))
-    );
-
-    summaryLines.forEach((line, index) => {
-        if (index < timestampBlocks.length) {
-            const title = line.replace(/[#*]/g, '').trim();
-            const block = timestampBlocks[index];
-            if (block && title.length > 10) {
-                keyPoints.push({
-                    title,
-                    description: `Key discussion point from ${block.speaker || 'meeting'}`,
-                    timestamp: block.timestamp,
-                    videoLink: createVideoLink(block.timestamp, videoUrl),
-                    speaker: block.speaker
-                });
-            }
-        }
-    });
-    return keyPoints;
-}
-
-function createVideoLink(timestamp, videoUrl) {
-    const [hours, minutes, seconds] = timestamp.split(':');
-    return `${videoUrl}#t=${hours}h${minutes}m${seconds}s`;
-}
-
 function chunkArray(array, chunkSize) {
     const chunks = [];
     for (let i = 0; i < array.length; i += chunkSize) {
@@ -715,12 +737,10 @@ function chunkArray(array, chunkSize) {
     return chunks;
 }
 
-// Export functions for testing
 if (typeof module !== 'undefined' && module.exports) {
     module.exports = {
         parseVttTimestamps,
         extractMeetingMetadata,
-        extractKeyPoints,
-        createVideoLink
+        deriveKeyPointsFallbackFromText
     };
 }
