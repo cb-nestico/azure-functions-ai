@@ -9,12 +9,40 @@ process.on('unhandledRejection', (reason) => {
     console.error('Unhandled Rejection:', reason);
 });
 
+// Logging shim to support context.log.error/warn/info on runtimes where they are not functions
+function setupLogging(context) {
+    try {
+        if (!context) return;
+
+        // Ensure level methods exist
+        if (typeof context.error !== 'function') context.error = (...args) => console.error(...args);
+        if (typeof context.warn !== 'function')  context.warn  = (...args) => console.warn(...args);
+        if (typeof context.info !== 'function')  context.info  = (...args) => console.info(...args);
+
+        // Ensure context.log exists and attach level helpers
+        if (typeof context.log !== 'function') {
+            const base = (...args) => console.log(...args);
+            base.error = (...args) => context.error(...args);
+            base.warn  = (...args) => context.warn(...args);
+            base.info  = (...args) => context.info(...args);
+            context.log = base;
+        } else {
+            if (typeof context.log.error !== 'function') context.log.error = (...args) => context.error(...args);
+            if (typeof context.log.warn  !== 'function') context.log.warn  = (...args) => context.warn(...args);
+            if (typeof context.log.info  !== 'function') context.log.info  = (...args) => context.info(...args);
+        }
+    } catch {
+        // no-op
+    }
+}
+
 // ✅ HTTP Trigger Registration
 app.http('ProcessVttFile', {
     methods: ['GET', 'POST'],
     authLevel: 'function',
     route: 'ProcessVttFile',
     handler: async (request, context) => {
+        setupLogging(context);
         const startTime = Date.now();
         context.log('🎯 ProcessVttFile function triggered');
 
@@ -60,7 +88,7 @@ app.http('ProcessVttFile', {
 
         } catch (error) {
             context.log.error('❌ Function execution failed:', error?.message || error);
-            context.log.error('Stack trace:', error?.stack);
+            context.log.error('❌ Function error stack:', error?.stack || 'No stack trace');
 
             return {
                 status: 500,
@@ -69,6 +97,7 @@ app.http('ProcessVttFile', {
                     success: false,
                     error: 'Function execution failed',
                     message: error?.message || String(error),
+                    stack: error?.stack || 'No stack trace',
                     timestamp: new Date().toISOString(),
                     processingTimeMs: Date.now() - startTime
                 })
@@ -97,7 +126,7 @@ async function processSingleFile(context, fileName, outputFormat = 'json') {
     };
 }
 
-// ✅ Batch Handler with per-file success/failure (sequential, resilient)
+// ✅ Batch Handler with extra error logging
 async function processBatchFiles(context, fileNames, outputFormat = 'json') {
     const results = [];
     const batchStartTime = Date.now();
@@ -125,10 +154,12 @@ async function processBatchFiles(context, fileNames, outputFormat = 'json') {
                     });
                 } catch (error) {
                     context.log.error(`  ❌ Unhandled error for ${fileName}:`, error);
+                    context.log.error(`  ❌ Error stack for ${fileName}:`, error?.stack || 'No stack trace');
                     results.push({
                         fileName,
                         success: false,
                         error: error?.message || String(error),
+                        stack: error?.stack || 'No stack trace',
                         processingTimeMs: Date.now() - fileStartTime
                     });
                 }
@@ -141,6 +172,14 @@ async function processBatchFiles(context, fileNames, outputFormat = 'json') {
         }
     } catch (err) {
         context.log.error('❌ Unhandled error in processBatchFiles:', err);
+        context.log.error('❌ Batch error stack:', err?.stack || 'No stack trace');
+        results.push({
+            fileName: 'BatchError',
+            success: false,
+            error: err?.message || String(err),
+            stack: err?.stack || 'No stack trace',
+            processingTimeMs: Date.now() - batchStartTime
+        });
     }
 
     const batchTotalTime = Date.now() - batchStartTime;
@@ -299,6 +338,7 @@ async function processSingleVttFile(context, fileName, outputFormat = 'json') {
         context.log(`✅ Found file: ${targetFile.name} (${targetFile.size} bytes)`);
 
         let vttContent;
+        let wasTruncated = false;
         try {
             context.log(`🔎 Fetching file details for download URL (id: ${targetFile.id})`);
             const fileDetails = await graphClient
@@ -329,7 +369,7 @@ async function processSingleVttFile(context, fileName, outputFormat = 'json') {
 
             const raw = await response.text();
             const MAX_CHARS = 32000;
-            const wasTruncated = raw.length > MAX_CHARS;
+            wasTruncated = raw.length > MAX_CHARS;
             vttContent = wasTruncated ? raw.slice(0, MAX_CHARS) : raw;
             context.log(`✅ Downloaded content: ${raw.length} characters`);
             if (wasTruncated) {
@@ -337,10 +377,12 @@ async function processSingleVttFile(context, fileName, outputFormat = 'json') {
             }
         } catch (downloadError) {
             context.log.error('❌ Error downloading VTT file:', downloadError);
+            context.log.error('❌ Download error stack:', downloadError?.stack || 'No stack trace');
             return {
                 success: false,
                 status: 500,
                 error: `Error downloading VTT file: ${downloadError?.message || downloadError}`,
+                stack: downloadError?.stack || 'No stack trace',
                 processedAt: new Date().toISOString(),
                 processingTimeMs: Date.now() - processingStartTime
             };
@@ -352,10 +394,12 @@ async function processSingleVttFile(context, fileName, outputFormat = 'json') {
             context.log(`✅ Parsed VTT timestamps, blocks: ${timestampBlocks.length}`);
         } catch (parseError) {
             context.log.error('❌ Error parsing VTT timestamps:', parseError?.message || parseError);
+            context.log.error('❌ Parse error stack:', parseError?.stack || 'No stack trace');
             return {
                 success: false,
                 status: 500,
                 error: `Error parsing VTT timestamps: ${parseError?.message || parseError}`,
+                stack: parseError?.stack || 'No stack trace',
                 processedAt: new Date().toISOString(),
                 processingTimeMs: Date.now() - processingStartTime
             };
@@ -367,10 +411,12 @@ async function processSingleVttFile(context, fileName, outputFormat = 'json') {
             context.log(`✅ Extracted meeting metadata: ${JSON.stringify(meetingMetadata)}`);
         } catch (metaError) {
             context.log.error('❌ Error extracting meeting metadata:', metaError?.message || metaError);
+            context.log.error('❌ Metadata error stack:', metaError?.stack || 'No stack trace');
             return {
                 success: false,
                 status: 500,
                 error: `Error extracting meeting metadata: ${metaError?.message || metaError}`,
+                stack: metaError?.stack || 'No stack trace',
                 processedAt: new Date().toISOString(),
                 processingTimeMs: Date.now() - processingStartTime
             };
@@ -380,21 +426,20 @@ async function processSingleVttFile(context, fileName, outputFormat = 'json') {
 
         // --- Refined Key Point Extraction Logic ---
         const aiPrompt = `
-You are an expert meeting analyst. Given the following transcript, extract:
-1. Executive summary (2-3 sentences).
-2. Key discussion points as a numbered JSON array, each with:
-   - "title": short topic or action item
-   - "timestamp": HH:MM:SS if available
-   - "speaker": name if available
-   - "videoLink": clickable link using the timestamp and video URL (format: [Link](videoUrl#t=HHhMMmSSs))
-Format your response as:
+You are a service that outputs ONLY strict JSON. No prose. No Markdown. No code fences.
+Analyze the transcript and return exactly this JSON schema:
+
 {
-  "summary": "...",
+  "summary": "2-3 sentences executive summary",
   "keyPoints": [
-    { "title": "...", "timestamp": "...", "speaker": "...", "videoLink": "..." },
-    ...
+    { "title": "short topic or action", "timestamp": "HH:MM:SS", "speaker": "name if known", "videoLink": "" }
   ]
 }
+
+Rules:
+- Output a single JSON object only.
+- keyPoints: 5–12 items when possible.
+- If a field is unknown, use an empty string.
 Transcript:
 ${transcriptText}
 `;
@@ -405,42 +450,48 @@ ${transcriptText}
         try {
             const aiResponse = await openaiClient.chat.completions.create({
                 model: config.deployment,
-                messages: [{ role: 'user', content: aiPrompt }],
+                messages: [
+                    { role: 'system', content: 'You output only strict JSON objects that match the user schema.' },
+                    { role: 'user', content: aiPrompt }
+                ],
                 temperature: 0.2,
-                max_tokens: 1024
+                max_tokens: 1024,
+                // Force structured JSON from Azure OpenAI (2024-08-01-preview)
+                response_format: { type: 'json_object' }
             });
             context.log('🧠 Raw AI response:', aiResponse);
 
-            let aiContent = aiResponse.choices?.[0]?.message?.content;
-            try {
-                aiParsed = typeof aiContent === 'string' ? JSON.parse(aiContent) : aiContent;
-            } catch (err) {
-                context.log.error('❌ Failed to parse AI response:', err, aiContent);
-                aiParsed = {};
-            }
+            const aiContent = aiResponse?.choices?.[0]?.message?.content ?? '';
+            aiParsed = safeParseModelJson(aiContent);
             context.log('🧠 Parsed AI response:', aiParsed);
 
-            summary = aiParsed.summary || "";
-            keyPoints = Array.isArray(aiParsed.keyPoints) ? aiParsed.keyPoints.filter(Boolean) : [];
+            summary = (aiParsed && typeof aiParsed.summary === 'string') ? aiParsed.summary : "";
+            keyPoints = Array.isArray(aiParsed?.keyPoints) ? aiParsed.keyPoints.filter(Boolean) : [];
         } catch (err) {
-            context.log.error('❌ Error calling OpenAI:', err);
+            context.log.error('❌ Error calling or parsing OpenAI:', err);
+            context.log.error('❌ OpenAI error stack:', err?.stack || 'No stack trace');
             summary = "";
             keyPoints = [];
         }
 
+        // Build video links if available
         if (keyPoints.length > 0) {
             keyPoints = keyPoints.map(point => ({
                 ...point,
-                videoLink: point.timestamp && meetingMetadata.videoUrl
+                videoLink: point?.timestamp && meetingMetadata.videoUrl
                     ? `${meetingMetadata.videoUrl}#t=${(point.timestamp || '').replace(/:/g, 'h').replace(/h(\d{2})$/, 'm$1s')}`
-                    : ""
+                    : (point?.videoLink || "")
             }));
         }
 
-        if (keyPoints.length < 3) {
+        // Fallbacks: never fail the request just because AI format varied
+        if (!summary || summary.trim().length < 20) {
+            summary = generateFallbackSummary(transcriptText);
+        }
+        if (!Array.isArray(keyPoints) || keyPoints.length < 3) {
             const fallback = deriveKeyPointsFallbackFromText(transcriptText);
-            keyPoints = fallback.map((point, idx) => ({
-                title: point,
+            keyPoints = fallback.slice(0, 8).map((title, idx) => ({
+                title,
                 timestamp: timestampBlocks[idx]?.timestamp || "",
                 speaker: timestampBlocks[idx]?.speaker || "",
                 videoLink: timestampBlocks[idx]?.timestamp && meetingMetadata.videoUrl
@@ -449,24 +500,13 @@ ${transcriptText}
             }));
         }
 
-        if (!summary || !keyPoints) {
-            context.log.error('❌ Missing summary or keyPoints before formatting output');
-            return {
-                success: false,
-                status: 500,
-                error: 'Missing summary or keyPoints before formatting output',
-                processedAt: new Date().toISOString(),
-                processingTimeMs: Date.now() - processingStartTime
-            };
-        }
-
         const metadata = {
             endpoint: config.openaiEndpoint,
             deployment: config.deployment,
             fileSize: targetFile.size,
             originalContentLength: vttContent.length,
             processedContentLength: vttContent.length,
-            truncated: false,
+            truncated: wasTruncated,
             estimatedTokens: Math.round(vttContent.length / 4),
             totalTimestamps: timestampBlocks.length,
             totalKeyPoints: keyPoints.length,
@@ -492,10 +532,12 @@ ${transcriptText}
             context.log('✅ Output formatted');
         } catch (formatError) {
             context.log.error('❌ Error formatting output:', formatError?.message || formatError);
+            context.log.error('❌ Format error stack:', formatError?.stack || 'No stack trace');
             return {
                 success: false,
                 status: 500,
                 error: `Error formatting output: ${formatError?.message || formatError}`,
+                stack: formatError?.stack || 'No stack trace',
                 processedAt: new Date().toISOString(),
                 processingTimeMs: Date.now() - processingStartTime
             };
@@ -505,10 +547,12 @@ ${transcriptText}
 
     } catch (error) {
         context.log.error(`❌ Error in processSingleVttFile for ${fileName}:`, error?.message || error);
+        context.log.error('❌ Single file error stack:', error?.stack || 'No stack trace');
         return {
             success: false,
             status: 500,
             error: error?.message || String(error),
+            stack: error?.stack || 'No stack trace',
             file: fileName,
             processedAt: new Date().toISOString(),
             processingTimeMs: Date.now() - processingStartTime
@@ -735,6 +779,33 @@ function chunkArray(array, chunkSize) {
         chunks.push(array.slice(i, i + chunkSize));
     }
     return chunks;
+}
+
+// Safe JSON parse for model outputs that may include code fences
+function safeParseModelJson(text) {
+    if (!text) return {};
+    let cleaned = String(text).trim();
+    cleaned = cleaned.replace(/^```(?:json)?\s*/i, '').replace(/```$/i, '').trim();
+    try { return JSON.parse(cleaned); } catch {}
+    const start = cleaned.indexOf('{');
+    const end = cleaned.lastIndexOf('}');
+    if (start >= 0 && end > start) {
+        const candidate = cleaned.slice(start, end + 1);
+        try { return JSON.parse(candidate); } catch {}
+    }
+    return {};
+}
+
+function generateFallbackSummary(text) {
+    if (!text) return "Meeting transcript processed. Key topics extracted.";
+    const clean = text
+        .replace(/^\s*\d{2}:\d{2}:\d{2}\s*/gm, '')
+        .replace(/<[^>]+>/g, '')
+        .replace(/\s+/g, ' ')
+        .trim();
+    const sentences = clean.split(/(?<=[.!?])\s+/).filter(s => s.length > 0);
+    const picked = sentences.slice(0, 3).join(' ');
+    return picked || "Meeting transcript processed. Key topics extracted.";
 }
 
 if (typeof module !== 'undefined' && module.exports) {
