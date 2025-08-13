@@ -1352,3 +1352,135 @@ Write-Host "✅ Success: $($response.meetingTitle) - $($response.keyPoints.Lengt
 - Improved fallback logic and video link generation for key points.
 - Enhanced error handling and logging.
 - Verified HTML output formatting.
+
+======================== Monday August 13 ===============
+
+
+# Azure Functions — VTT Meeting Transcript Processor
+
+Processes .vtt transcripts stored in SharePoint via Microsoft Graph, extracts key points with Azure OpenAI, and returns JSON/HTML/Markdown summaries.
+
+## Features
+- HTTP-triggered function: `ProcessVttFile` (GET/POST).
+- SharePoint Graph integration to find and download VTT files.
+- Azure OpenAI analysis (strict JSON output + robust parsing fallback).
+- Batch mode with per-file results and no 500s on partial failures.
+- Detailed logging with Application Insights.
+
+## Endpoints
+- GET: `/api/ProcessVttFile?name=<file.vtt>&format=json|html|markdown|summary`
+- POST: `/api/ProcessVttFile`
+  - Single
+    ```json
+    { "name": "Exclaimer7.vtt", "outputFormat": "json" }
+    ```
+  - Batch
+    ```json
+    {
+      "batchMode": true,
+      "fileNames": ["Exclaimer7.vtt", "NoSuchFile.vtt"],
+      "outputFormat": "json"
+    }
+    ```
+
+## Environment variables
+Set in Azure Function App configuration (do not commit secrets):
+- TENANT_ID
+- CLIENT_ID
+- CLIENT_SECRET
+- OPENAI_ENDPOINT (e.g., https://<resource>.openai.azure.com)
+- OPENAI_KEY
+- OPENAI_DEPLOYMENT (e.g., gpt-4o-text)
+- SHAREPOINT_DRIVE_ID
+- SHAREPOINT_SITE_URL
+
+For local runs, put them in local.settings.json (excluded from Git).
+
+## Local development (Windows)
+```powershell
+# From repo root
+npm install
+func start
+# Or run/debug via VS Code Azure Functions extension
+```
+
+## Deploy
+- VS Code: Azure panel > Functions > Right-click your app > Deploy to Function App.
+- Azure Functions Core Tools:
+```powershell
+func azure functionapp publish <FUNCTION_APP_NAME>
+```
+
+## Observability
+- App Insights Logs > Queries
+
+Requests (find failures/success):
+```kusto
+requests
+| where name has "ProcessVttFile"
+| order by timestamp desc
+| project timestamp, resultCode, success, operation_Id, url, duration
+```
+
+Correlate by operation_Id:
+```kusto
+let op = "<paste operation_Id>";
+traces
+| where operation_Id == op
+| order by timestamp asc;
+exceptions
+| where operation_Id == op
+| order by timestamp asc;
+dependencies
+| where operation_Id == op
+| order by timestamp asc;
+```
+
+Common diagnostics:
+- Missing file -> returns 404 in per-file result.
+- OpenAI formatting -> handled via response_format=json_object + fallback parser.
+- Large transcripts -> trimmed to ~32k chars (see logs when truncated).
+
+## Response shape (JSON, single file)
+```json
+{
+  "success": true,
+  "meetingTitle": "Exclaimer7",
+  "date": "2025-08-13",
+  "videoUrl": "https://.../Shared%20Documents/Exclaimer7",
+  "file": "Exclaimer7.vtt",
+  "actualFile": "Exclaimer7.vtt",
+  "summary": "...",
+  "keyPoints": [
+    { "title": "...", "timestamp": "00:01:20", "speaker": "..." , "videoLink": "..." }
+  ],
+  "timestampBlocks": [ { "timestamp": "00:00:06", "content": "...", "speaker": "..." } ],
+  "metadata": { "processingTimeMs": 12345, "totalKeyPoints": 10, "...": "..." }
+}
+```
+
+## Batch semantics
+- HTTP 200 with per-file results.
+- success = true only if all files succeed.
+- Each result includes `status` (200/404/500…) and `error` when applicable.
+
+## Security
+- Never commit CLIENT_SECRET or OPENAI_KEY.
+- local.settings.json stays local.
+- Use managed identity instead of client secret when possible.
+
+## Code highlights
+- Logging shim maps `context.log.error` to `context.error` for runtime compatibility.
+- Azure OpenAI call enforces JSON:
+  - `response_format: { "type": "json_object" }`
+  - Fallback parser strips code fences.
+- Robust fallbacks ensure no 500s on AI formatting variance.
+
+## Troubleshooting
+- 404 “File not found”: check SHAREPOINT_DRIVE_ID and file name; logs list available files.
+- Graph 401/403: verify app permissions and admin consent.
+- OpenAI 401/403: verify endpoint, key, deployment, api-version.
+- 429: add retry/backoff if you see throttling in dependencies.
+
+## License
+MIT (update as needed)
