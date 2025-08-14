@@ -109,7 +109,7 @@ app.http('ProcessVttFile', {
 // ✅ Single File Handler
 async function processSingleFile(context, fileName, outputFormat = 'json') {
     const result = await processSingleVttFile(context, fileName, outputFormat);
-    const status = result && result.status ? result.status : 200;
+    const status = result && result.status ? result.status : (result?.success ? 200 : 500);
 
     if (outputFormat.toLowerCase() === 'html' && result.htmlContent) {
         return {
@@ -126,7 +126,7 @@ async function processSingleFile(context, fileName, outputFormat = 'json') {
     };
 }
 
-// ✅ Batch Handler with extra error logging
+// ✅ Batch Handler with Option 1A semantics and token aggregation
 async function processBatchFiles(context, fileNames, outputFormat = 'json') {
     const results = [];
     const batchStartTime = Date.now();
@@ -184,12 +184,26 @@ async function processBatchFiles(context, fileNames, outputFormat = 'json') {
 
     const batchTotalTime = Date.now() - batchStartTime;
     const successfulFiles = results.filter(r => r.success);
+    const anySuccess = results.some(r => r.success);
+    const allSuccess = results.every(r => r.success);
+
+    // Aggregate OpenAI token usage across files
+    const tokenTotals = results.reduce((acc, r) => {
+        const t = r?.metadata?.openaiTokens;
+        if (t) {
+            acc.prompt += t.prompt || 0;
+            acc.completion += t.completion || 0;
+            acc.total += t.total || 0;
+        }
+        return acc;
+    }, { prompt: 0, completion: 0, total: 0 });
 
     return {
         status: 200,
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-            success: successfulFiles.length === results.length,
+            success: anySuccess,
+            partialSuccess: anySuccess && !allSuccess,
             batchMode: true,
             processedFiles: results.length,
             successfulFiles: successfulFiles.length,
@@ -201,7 +215,8 @@ async function processBatchFiles(context, fileNames, outputFormat = 'json') {
                 concurrencyLimit,
                 totalBatches: batches.length,
                 outputFormat,
-                timestamp: new Date().toISOString()
+                timestamp: new Date().toISOString(),
+                openaiTokensTotal: tokenTotals
             }
         })
     };
@@ -368,7 +383,7 @@ async function processSingleVttFile(context, fileName, outputFormat = 'json') {
             }
 
             const raw = await response.text();
-            const MAX_CHARS = 32000;
+            const MAX_CHARS = Number(process.env.MAX_VTT_CHARS || 32000);
             wasTruncated = raw.length > MAX_CHARS;
             vttContent = wasTruncated ? raw.slice(0, MAX_CHARS) : raw;
             context.log(`✅ Downloaded content: ${raw.length} characters`);
@@ -447,6 +462,8 @@ ${transcriptText}
         let aiParsed = {};
         let summary = "";
         let keyPoints = [];
+        // Token usage log holder
+        let tokensLog = { prompt: 0, completion: 0, total: 0 };
         try {
             const aiResponse = await openaiClient.chat.completions.create({
                 model: config.deployment,
@@ -460,6 +477,15 @@ ${transcriptText}
                 response_format: { type: 'json_object' }
             });
             context.log('🧠 Raw AI response:', aiResponse);
+
+            // Token usage logging
+            const usage = aiResponse?.usage || {};
+            tokensLog = {
+                prompt: usage.prompt_tokens || 0,
+                completion: usage.completion_tokens || 0,
+                total: usage.total_tokens || 0
+            };
+            context.log(`🧾 OpenAI tokens: ${JSON.stringify(tokensLog)}`);
 
             const aiContent = aiResponse?.choices?.[0]?.message?.content ?? '';
             aiParsed = safeParseModelJson(aiContent);
@@ -511,7 +537,9 @@ ${transcriptText}
             totalTimestamps: timestampBlocks.length,
             totalKeyPoints: keyPoints.length,
             processedAt: new Date().toISOString(),
-            processingTimeMs: Date.now() - processingStartTime
+            processingTimeMs: Date.now() - processingStartTime,
+            // Per-file OpenAI token usage
+            openaiTokens: tokensLog
         };
 
         let result;
@@ -626,6 +654,7 @@ function generateHtmlOutput(context, result) {
     <div class="metadata">
         <h3>📊 Processing Information</h3>
         <p><strong>File:</strong> ${metadata.fileSize} bytes | <strong>Timestamps:</strong> ${metadata.totalTimestamps} | <strong>Processing:</strong> ${metadata.processingTimeMs}ms</p>
+        <p><strong>Tokens:</strong> prompt ${metadata.openaiTokens?.prompt || 0}, completion ${metadata.openaiTokens?.completion || 0}, total ${metadata.openaiTokens?.total || 0}</p>
     </div>
     <footer style="text-align: center; margin-top: 40px; padding-top: 20px; border-top: 1px solid #ddd; color: #666;">
         <p><em>Generated by Azure Functions VTT Meeting Transcript Processor</em></p>
@@ -672,6 +701,7 @@ ${keyPoints.map((point, index) => `### ${index + 1}. ${point.timestamp} - ${poin
 - **File Size:** ${Math.round(metadata.fileSize / 1024)}KB
 - **Timestamps:** ${metadata.totalTimestamps}
 - **Processing Time:** ${metadata.processingTimeMs}ms
+- **Tokens:** prompt ${metadata.openaiTokens?.prompt || 0}, completion ${metadata.openaiTokens?.completion || 0}, total ${metadata.openaiTokens?.total || 0}
 
 ---
 
@@ -706,6 +736,7 @@ function generateSummaryOutput(context, result) {
         })),
         processingTimeMs: metadata.processingTimeMs,
         fileSize: metadata.fileSize,
+        tokens: metadata.openaiTokens,
         outputFormat: 'summary',
         processedAt: metadata.processedAt
     };

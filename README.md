@@ -1484,3 +1484,137 @@ Common diagnostics:
 
 ## License
 MIT (update as needed)
+======================== Monday August 14 ===============
+# Azure Functions VTT Meeting Transcript Processor
+
+## Overview
+
+This Azure Function processes VTT (Video Text Track) meeting transcripts stored in SharePoint, summarizes meetings using Azure OpenAI, and returns structured results. It supports batch processing, error handling, and logs OpenAI token usage for observability.
+
+---
+
+## Features
+
+- **Batch Processing:** Submit multiple VTT files in one request.
+- **AI Summarization:** Uses Azure OpenAI to generate meeting summaries and key points.
+- **SharePoint Integration:** Downloads VTT files from a configured SharePoint drive.
+- **Token Usage Logging:** Tracks OpenAI token usage per file and aggregates totals.
+- **Error Handling:** Returns per-file status and errors for missing or invalid files.
+
+---
+
+## Batch Semantics
+
+- **success:** `true` if at least one file processed successfully.
+- **partialSuccess:** `true` if some files failed.
+- **results:** Array of per-file results, each with:
+  - `fileName`
+  - `success`
+  - `status` (e.g., `404` for not found)
+  - `summary`, `keyPoints`, `metadata` (for successful files)
+  - `error` (for failed files)
+- **metadata.openaiTokensTotal:** Aggregated OpenAI token usage for the batch.
+
+---
+
+## Environment Variables
+
+Set these in Azure Portal > Function App > Configuration:
+
+- `TENANT_ID`
+- `CLIENT_ID`
+- `CLIENT_SECRET`
+- `OPENAI_ENDPOINT`
+- `OPENAI_KEY`
+- `OPENAI_DEPLOYMENT`
+- `SHAREPOINT_DRIVE_ID`
+- `SHAREPOINT_SITE_URL`
+- `MAX_VTT_CHARS` (e.g., `32000`)
+
+---
+
+## Usage
+
+### Single File (GET)
+```bash
+curl "https://<your-app-name>.azurewebsites.net/api/ProcessVttFile?name=Exclaimer7.vtt"
+```
+
+### Batch (POST)
+```bash
+curl -X POST "https://<your-app-name>.azurewebsites.net/api/ProcessVttFile" ^
+  -H "Content-Type: application/json" ^
+  -d "{\"batchMode\":true,\"fileNames\":[\"Exclaimer7.vtt\",\"NoSuchFile.vtt\"],\"outputFormat\":\"json\"}"
+```
+
+---
+
+## Monitoring
+
+- **Application Insights:** Query logs for `"🧾 OpenAI tokens:"` to track usage.
+- **Error Tracking:** Check per-file `status` and `error` fields in the response.
+
+---
+
+## Example Response
+
+```json
+{
+  "success": true,
+  "partialSuccess": true,
+  "metadata": {
+    "openaiTokensTotal": {
+      "prompt": 10653,
+      "completion": 442,
+      "total": 11095
+    }
+  },
+  "results": [
+    {
+      "fileName": "Exclaimer7.vtt",
+      "success": true,
+      "summary": "...",
+      "keyPoints": [...],
+      "metadata": {
+        "openaiTokens": {
+          "prompt": 10653,
+          "completion": 442,
+          "total": 11095
+        }
+      }
+    },
+    {
+      "fileName": "NoSuchFile.vtt",
+      "success": false,
+      "status": 404,
+      "error": "File not found: NoSuchFile.vtt"
+    }
+  ]
+}
+```
+
+---
+
+## Deployment
+
+1. Clone repo and set up local.settings.json for local testing.
+2. Deploy to Azure using:
+   ```bash
+   func azure functionapp publish <FUNCTION_APP_NAME>
+   ```
+3. Set all required environment variables in Azure Portal.
+4. Restart Function App after changes.
+
+---
+
+## Troubleshooting
+
+- **Missing MAX_VTT_CHARS:** Add it in Azure Portal > Configuration.
+- **Token usage too high:** Lower `MAX_VTT_CHARS` value.
+- **File not found:** Check `SHAREPOINT_DRIVE_ID` and `SHAREPOINT_SITE_URL`.
+
+---
+
+## License
+
+MIT
