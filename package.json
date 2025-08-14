@@ -11,6 +11,7 @@
     "@azure/functions": "^4.0.0",
     "@azure/identity": "^4.11.1",
     "@microsoft/microsoft-graph-client": "^3.0.7",
+    "isomorphic-fetch": "^3.0.0",
     "node-fetch": "^2.7.0",
     "openai": "^4.104.0"
   }

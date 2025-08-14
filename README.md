@@ -1615,6 +1615,103 @@ curl -X POST "https://<your-app-name>.azurewebsites.net/api/ProcessVttFile" ^
 
 ---
 
-## License
+=================== Monday August 14 GITHUB Enhancement Roadmap ===============
+## 🚀 Future Enhancement Roadmap
 
-MIT
+The following features are planned to further enhance the Azure Functions VTT Meeting Transcript Processor:
+
+### 1. SharePoint Webhooks
+Automatically trigger transcript processing when new VTT files are uploaded to SharePoint. This enables real-time meeting summary generation without manual requests.
+
+### 2. Advanced Output Formats
+Support exporting summaries as Word, PDF, or SharePoint list items. This will improve integration with business workflows and document management.
+
+### 3. Power Platform Integration
+Enable Power Automate flows, Teams notifications, and Dynamics 365 integration. This allows seamless automation and sharing of meeting insights across Microsoft 365 services.
+
+### 4. Batch Concurrency
+Process multiple files in parallel for faster batch operations. This will be configurable via a `BATCH_CONCURRENCY` environment variable.
+
+=================== Monday August 14 migrated your Azure Functions project to the new Node.js programming model===========================================================
+## Migrating Classic Azure Functions to the New Node.js Programming Model
+
+### Summary
+
+Today, we updated the Azure Functions project to use the new Node.js programming model. Classic function handlers (`SharePointWebhook` and `ProcessVttFile`) were registered in the project root `index.js` using `app.http`, making them discoverable and callable by the Azure Functions host.
+
+### Steps Completed
+
+1. **Verified classic handlers:**  
+   - `src/functions/SharePointWebhook/index.js`
+   - `src/functions/ProcessVttFile/index.js`
+
+2. **Created root `index.js` registrations:**
+   - Registered both handlers using `app.http` in `c:\AZURE FUNCTIONS-AI\index.js`.
+
+3. **Tested endpoints locally:**
+   - Both `SharePointWebhook` and `ProcessVttFile` are listed and callable.
+
+4. **Prepared for Azure deployment:**
+   - All required environment variables are set in `local.settings.json`.
+   - Ready to deploy using `func azure functionapp publish <YourFunctionAppName>`.
+
+### Example root `index.js` registration
+
+```javascript
+const { app } = require('@azure/functions');
+
+// Register SharePointWebhook
+const sharePointHandlerClassic = require('./src/functions/SharePointWebhook/index.js');
+app.http('SharePointWebhook', {
+  methods: ['POST', 'GET', 'OPTIONS'],
+  authLevel: 'function',
+  handler: async (request, context) => {
+    let body = null;
+    try { body = await request.json(); } catch (_) { /* ignore */ }
+    const classicReq = {
+      query: {
+        get: (key) => (request.query && typeof request.query.get === 'function') ? request.query.get(key) : (request.query && request.query[key]),
+        validationToken: (request.query && (typeof request.query.get === 'function' ? request.query.get('validationToken') : request.query.validationToken))
+      },
+      body
+    };
+    await sharePointHandlerClassic(context, classicReq);
+    if (context && context.res) {
+      return { status: context.res.status || 200, body: context.res.body, headers: context.res.headers };
+    }
+    return { status: 202, body: 'Webhook processed' };
+  }
+});
+
+// Register ProcessVttFile
+const processVttFileHandlerClassic = require('./src/functions/ProcessVttFile/index.js');
+app.http('ProcessVttFile', {
+  methods: ['POST', 'GET', 'OPTIONS'],
+  authLevel: 'function',
+  handler: async (request, context) => {
+    let body = null;
+    try { body = await request.json(); } catch (_) { /* ignore */ }
+    const classicReq = {
+      query: {
+        get: (key) => (request.query && typeof request.query.get === 'function') ? request.query.get(key) : (request.query && request.query[key])
+      },
+      body
+    };
+    await processVttFileHandlerClassic(context, classicReq);
+    if (context && context.res) {
+      return { status: context.res.status || 200, body: context.res.body, headers: context.res.headers };
+    }
+    return { status: 202, body: 'VTT file processed' };
+  }
+});
+```
+
+### Next Steps
+
+- Deploy to Azure and set environment variables in the portal.
+- Set up Microsoft Graph webhook subscriptions to point to your Azure endpoints.
+- Monitor and renew subscriptions as needed.
+
+---
+
+*This section documents the migration and registration process for classic Azure Functions in the new Node.js programming model.*

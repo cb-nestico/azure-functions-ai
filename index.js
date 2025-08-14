@@ -1,29 +1,64 @@
 const { app } = require('@azure/functions');
 
-// Load and register your existing v4 function (do not move it)
-require('./src/functions/ProcessVttFile');
+// Register SharePointWebhook using the new programming model
+try {
+  const sharePointHandlerClassic = require('./src/functions/SharePointWebhook/index.js');
 
-module.exports = app;
+  app.http('SharePointWebhook', {
+    methods: ['POST', 'GET', 'OPTIONS'],
+    authLevel: 'function',
+    handler: async (request, context) => {
+      let body = null;
+      try { body = await request.json(); } catch (_) { /* ignore */ }
 
-function safeJsonParse(str) {
-  try { return JSON.parse(str); } catch { return null; }
+      const classicReq = {
+        query: {
+          get: (key) => (request.query && typeof request.query.get === 'function') ? request.query.get(key) : (request.query && request.query[key]),
+          validationToken: (request.query && (typeof request.query.get === 'function' ? request.query.get('validationToken') : request.query.validationToken))
+        },
+        body
+      };
+
+      await sharePointHandlerClassic(context, classicReq);
+
+      if (context && context.res) {
+        return { status: context.res.status || 200, body: context.res.body, headers: context.res.headers };
+      }
+      return { status: 202, body: 'Webhook processed' };
+    }
+  });
+} catch (err) {
+  console.error('Could not register SharePointWebhook wrapper:', err && err.stack ? err.stack : err);
 }
 
-function deriveKeyPointsFallbackFromText(text) {
-  if (!text) return [];
-  // Collect bullet-style lines
-  const bullets = Array.from(new Set(
-    text.split(/\r?\n+/)
-        .filter(l => /^\s*[-•–]/.test(l))
-        .map(l => l.replace(/^\s*[-•–]\s*/, "").trim())
-        .filter(Boolean)
-  ));
-  if (bullets.length >= 3) return bullets.slice(0, 12);
-  // Otherwise take first sentences
-  return text
-    .split(/(?<=[.!?])\s+/)
-    .map(s => s.trim())
-    .filter(Boolean)
-    .slice(0, 8);
+// Register ProcessVttFile using the new programming model
+try {
+  const processVttFileHandlerClassic = require('./src/functions/ProcessVttFile/index.js');
+
+  app.http('ProcessVttFile', {
+    methods: ['POST', 'GET', 'OPTIONS'],
+    authLevel: 'function',
+    handler: async (request, context) => {
+      let body = null;
+      try { body = await request.json(); } catch (_) { /* ignore */ }
+
+      const classicReq = {
+        query: {
+          get: (key) => (request.query && typeof request.query.get === 'function') ? request.query.get(key) : (request.query && request.query[key])
+        },
+        body
+      };
+
+      await processVttFileHandlerClassic(context, classicReq);
+
+      if (context && context.res) {
+        return { status: context.res.status || 200, body: context.res.body, headers: context.res.headers };
+      }
+      return { status: 202, body: 'VTT file processed' };
+    }
+  });
+} catch (err) {
+  console.error('Could not register ProcessVttFile wrapper:', err && err.stack ? err.stack : err);
 }
-// ---------- End helpers ----------
+
+// ...existing code...
