@@ -74,6 +74,7 @@ app.http('ProcessVttFile', {
                 }
             }
 
+            // Batch processing with concurrency (Promise.allSettled)
             if (batchMode && fileNames.length > 1) {
                 context.log(`🔄 Starting batch processing for ${fileNames.length} files`);
                 return await processBatchFiles(context, fileNames, outputFormat);
@@ -126,60 +127,45 @@ async function processSingleFile(context, fileName, outputFormat = 'json') {
     };
 }
 
-// ✅ Batch Handler with Option 1A semantics and token aggregation
+// ✅ Batch Handler with concurrency and token aggregation
 async function processBatchFiles(context, fileNames, outputFormat = 'json') {
-    const results = [];
     const batchStartTime = Date.now();
+    const concurrencyLimit = Number(process.env.BATCH_CONCURRENCY || 3);
 
-    const concurrencyLimit = 1;
+    context.log(`🧪 BATCH MODE: concurrencyLimit=${concurrencyLimit}, totalFiles=${fileNames.length}`);
+
+    // Process files in parallel with Promise.allSettled
     const batches = chunkArray(fileNames, concurrencyLimit);
+    const results = [];
 
-    context.log(`🧪 BATCH MODE: concurrencyLimit=${concurrencyLimit}, totalFiles=${fileNames.length}, totalBatches=${batches.length}`);
+    for (let batchIndex = 0; batchIndex < batches.length; batchIndex++) {
+        const batch = batches[batchIndex];
+        context.log(`▶️ Processing batch ${batchIndex + 1}/${batches.length} (size=${batch.length})`);
 
-    try {
-        for (let batchIndex = 0; batchIndex < batches.length; batchIndex++) {
-            const batch = batches[batchIndex];
-            context.log(`▶️ Processing batch ${batchIndex + 1}/${batches.length} (size=${batch.length})`);
-
-            for (const fileName of batch) {
-                const fileStartTime = Date.now();
-                context.log(`  • Processing file in batch: ${fileName}`);
-                try {
-                    const fileResult = await processSingleVttFile(context, fileName, outputFormat);
-                    results.push({
+        const batchResults = await Promise.allSettled(
+            batch.map(fileName =>
+                processSingleVttFile(context, fileName, outputFormat)
+                    .then(fileResult => ({
                         fileName,
                         success: fileResult.success === true,
-                        processingTimeMs: Date.now() - fileStartTime,
+                        processingTimeMs: fileResult?.metadata?.processingTimeMs || 0,
                         ...fileResult
-                    });
-                } catch (error) {
-                    context.log.error(`  ❌ Unhandled error for ${fileName}:`, error);
-                    context.log.error(`  ❌ Error stack for ${fileName}:`, error?.stack || 'No stack trace');
-                    results.push({
+                    }))
+                    .catch(error => ({
                         fileName,
                         success: false,
                         error: error?.message || String(error),
                         stack: error?.stack || 'No stack trace',
-                        processingTimeMs: Date.now() - fileStartTime
-                    });
-                }
-            }
+                        processingTimeMs: 0
+                    }))
+            )
+        );
 
-            if (batchIndex < batches.length - 1) {
-                context.log('⏸️ Waiting 1s before next batch...');
-                await new Promise(resolve => setTimeout(resolve, 1000));
-            }
+        results.push(...batchResults.map(r => r.value || r.reason));
+        if (batchIndex < batches.length - 1) {
+            context.log('⏸️ Waiting 1s before next batch...');
+            await new Promise(resolve => setTimeout(resolve, 1000));
         }
-    } catch (err) {
-        context.log.error('❌ Unhandled error in processBatchFiles:', err);
-        context.log.error('❌ Batch error stack:', err?.stack || 'No stack trace');
-        results.push({
-            fileName: 'BatchError',
-            success: false,
-            error: err?.message || String(err),
-            stack: err?.stack || 'No stack trace',
-            processingTimeMs: Date.now() - batchStartTime
-        });
     }
 
     const batchTotalTime = Date.now() - batchStartTime;
@@ -202,6 +188,7 @@ async function processBatchFiles(context, fileNames, outputFormat = 'json') {
         status: 200,
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
+            batchId: `batch_${Date.now()}`,
             success: anySuccess,
             partialSuccess: anySuccess && !allSuccess,
             batchMode: true,
@@ -221,6 +208,10 @@ async function processBatchFiles(context, fileNames, outputFormat = 'json') {
         })
     };
 }
+
+// ...existing processSingleVttFile and helper functions remain unchanged...
+// (You can keep your previous implementation for processSingleVttFile, applyOutputFormat, chunkArray, etc.)
+
 
 // ✅ Granular Error Logging & Debug Statements in processSingleVttFile
 async function processSingleVttFile(context, fileName, outputFormat = 'json') {

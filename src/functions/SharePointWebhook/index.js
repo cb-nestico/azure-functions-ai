@@ -113,6 +113,34 @@ module.exports = async function (context, req) {
         continue;
       }
 
+      // Log changeType and other details
+      const changeType = notification?.changeType || 'unknown';
+      context.log(`📄 ChangeType: ${changeType}`);
+      context.log(`📄 SubscriptionId: ${notification?.subscriptionId}`);
+      context.log(`📄 TenantId: ${notification?.tenantId}`);
+      context.log(`📄 SiteUrl: ${notification?.siteUrl}`);
+      context.log(`📄 UserId: ${notification?.userId}`);
+      context.log(`📄 Expiration: ${notification?.expirationDateTime}`);
+      context.log(`📄 ClientState: ${notification?.clientState}`);
+
+      // Handle different change types
+      switch (changeType) {
+        case 'created':
+          context.log(`🟢 File created: ${itemName}`);
+          // TODO: Trigger downstream processing for new files
+          break;
+        case 'updated':
+          context.log(`🟡 File updated: ${itemName}`);
+          // TODO: Trigger downstream processing for updated files
+          break;
+        case 'deleted':
+          context.log(`🔴 File deleted: ${itemName}`);
+          // TODO: Handle file deletion if needed
+          break;
+        default:
+          context.log(`⚪ Unknown changeType: ${changeType}`);
+      }
+
       // Forward to ProcessVttFile if possible
       if (processEndpoint && fetchFn) {
         const payload = { batchMode: false, name: itemName, outputFormat: 'json' };
@@ -159,5 +187,5 @@ function inferNameFromResource(resource) {
     if (!resource) return null;
     const parts = String(resource).split('/');
     return parts[parts.length - 1] || null;
-  } catch (e) { return null; }
+  } catch (e) { return null; }  
 }
