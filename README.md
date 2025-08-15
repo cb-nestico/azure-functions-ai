@@ -1712,6 +1712,135 @@ app.http('ProcessVttFile', {
 - Set up Microsoft Graph webhook subscriptions to point to your Azure endpoints.
 - Monitor and renew subscriptions as needed.
 
+====== Friday August 15 Azure Functions & Microsoft Graph Webhook Management   =======================================
+## Azure Functions & Microsoft Graph Webhook 
+## 🗓️ **Today's Work: CLI Automation for Microsoft Graph Webhook Subscriptions**
+
+### **Script Folder & CLI Tool Creation**
+
+- **Created `scripts` folder** at the project root to organize automation and management scripts.
+- **Added `manage-subscriptions.js` CLI script** to automate Microsoft Graph webhook subscription management for SharePoint integration.
+
+#### **Purpose of the CLI Script**
+
+The `manage-subscriptions.js` script allows you to:
+- **Create** new webhook subscriptions for SharePoint drives.
+- **Renew** subscriptions automatically, with expiration set to 30 days from now if not specified.
+- **List** all active subscriptions for monitoring and troubleshooting.
+- **Delete** subscriptions when no longer needed.
+
+This automation ensures your Azure Functions app can reliably receive notifications from SharePoint via Microsoft Graph, without manual API calls or portal actions.
+
+#### **Updated Project Structure**
+
+```
+C:\AZURE FUNCTIONS-AI\
+├── scripts/
+│   └── manage-subscriptions.js      # CLI tool for subscription management
+├── src/
+│   └── functions/
+│       └── ProcessVttFile/
+│       └── SharePointWebhook/
+...
+```
+
+#### **How to Use the CLI Script**
+
+See the [Azure Functions & Microsoft Graph Webhook Management](#azure-functions--microsoft-graph-webhook-management) section below for full command details.
+
+- **Automated expiration:** If you omit `--expiration`, the script sets it to 30 days from now.
+- **Environment variables:** Set `TENANT_ID`, `CLIENT_ID`, and `CLIENT_SECRET` before running any commands.
+
+#### **Why This Matters**
+
+Automating webhook subscription management:
+- Prevents missed notifications due to expired subscriptions.
+- Simplifies renewal and monitoring for production deployments.
+- Enables integration with CI/CD or scheduled tasks for hands-off maintenance.
+
 ---
 
-*This section documents the migration and registration process for classic Azure Functions in the new Node.js programming model.*
+*This section documents the creation and purpose of the CLI automation added today. Update as you add more scripts or automation tools!*
+
+### Environment Setup
+
+Before running any commands, set the required environment variables in your terminal:
+
+```cmd
+set TENANT_ID=
+set CLIENT_ID=
+set CLIENT_SECRET=
+```
+
+### Subscription Management Commands
+
+#### Create a Subscription
+Creates a Microsoft Graph webhook subscription for your SharePoint drive.  
+If `--expiration` is omitted, it will be set to 30 days from now automatically.
+
+```cmd
+node scripts/manage-subscriptions.js create --resource "/sites/childrenbelievefund.sharepoint.com,55021408-2177-4a53-80f2-8181748cc177,c21d6fad-e877-4db6-9c46-d3cbea085bbd/drive/root" --notificationUrl "https://meetingtranscriptprocessor.azurewebsites.net/api/SharePointWebhook?code=<function-key>" --clientState "<your-client-state>"
+```
+
+#### Renew a Subscription
+Renews an existing subscription, extending its expiration date by 30 days from now (if `--expiration` is omitted).
+
+```cmd
+node scripts/manage-subscriptions.js renew --id "<subscription-id>"
+```
+
+#### List Subscriptions
+Lists all active Microsoft Graph webhook subscriptions for your app.
+
+```cmd
+node scripts/manage-subscriptions.js list
+```
+
+#### Delete a Subscription
+Deletes a subscription by its ID.
+
+```cmd
+node scripts/manage-subscriptions.js delete --id "<subscription-id>"
+```
+
+### Testing Endpoints
+
+Test your Azure Function endpoints using PowerShell or Command Prompt:
+
+```powershell
+Invoke-WebRequest -Uri "https://meetingtranscriptprocessor.azurewebsites.net/api/SharePointWebhook?code=<function-key>" -Method POST -ContentType "application/json" -Body '{"value":[]}'
+```
+
+Or using curl in Command Prompt:
+
+```cmd
+curl -X POST "https://meetingtranscriptprocessor.azurewebsites.net/api/SharePointWebhook?code=<function-key>" -H "Content-Type: application/json" -d "{\"value\":[]}"
+```
+
+### Monitoring Logs in Azure Portal
+
+- Go to your Function App in Azure Portal.
+- Navigate to **Monitoring > Log Stream** to view live logs and troubleshoot issues.
+
+### Important Notes
+
+- Subscription expiration can only be set to a maximum of 30 days from the current time.
+- You can renew subscriptions at any time before they expire.
+- All environment variables (see `local.settings.json`) must be set in Azure Portal for production use.
+
+---
+
+**Summary Table**
+
+| Command | Purpose |
+|---------|---------|
+| `create` | Create a new webhook subscription |
+| `renew`  | Renew an existing subscription |
+| `list`   | List all subscriptions |
+| `delete` | Delete a subscription |
+| `Invoke-WebRequest` / `curl` | Test Azure Function endpoints |
+| Azure Portal Log Stream | Monitor function execution and errors |
+
+---
+
+*Keep this section updated as you add new features or commands to your project.*
