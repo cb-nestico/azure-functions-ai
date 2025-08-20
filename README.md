@@ -1841,6 +1841,224 @@ curl -X POST "https://meetingtranscriptprocessor.azurewebsites.net/api/SharePoin
 | `Invoke-WebRequest` / `curl` | Test Azure Function endpoints |
 | Azure Portal Log Stream | Monitor function execution and errors |
 
+---=================================
+## Automated Subscription Renewal
+
+### RenewSubscriptions Timer Function
+
+A timer-triggered Azure Function named `RenewSubscriptions` is included in this project to automate the renewal of Microsoft Graph webhook subscriptions.
+
+- **Purpose:** Ensures all active subscriptions are renewed automatically before expiration, preventing missed notifications.
+- **Schedule:** Runs daily at midnight UTC.
+- **How it works:**  
+  - Lists all active subscriptions using Microsoft Graph API.
+  - Renews each subscription by setting its expiration to 30 days from the current time.
+  - Logs renewal results for monitoring and troubleshooting.
+
+#### Deployment Verification
+
+After deploying, you should see the following functions listed in the Azure Portal:
+
+- `ProcessVttFile` (HTTP trigger)
+- `SharePointWebhook` (HTTP trigger)
+- `RenewSubscriptions` (Timer trigger)
+
+**To verify:**
+1. Go to your Function App in Azure Portal.
+2. Confirm all three functions are listed under the Functions section.
+3. Use Monitoring > Log Stream to check that `RenewSubscriptions` runs as scheduled and logs renewal activity.
+
+===================================Batch Processing & Output Formats=========================
+## Batch Processing & Output Formats
+
+### API Endpoint
+
+```
+POST /api/ProcessVttFile?code=<your-function-key>
+```
+
+### Request Parameters
+
+- `name`: (string) Name of the VTT file to process (single file mode)
+- `batchMode`: (boolean) Set to `true` to process multiple files in one request
+- `fileNames`: (array) List of VTT file names for batch processing
+- `outputFormat`: (string) Output format: `json`, `markdown`, `html`, or `summary`
+
+### Supported Output Formats
+
+- `json`: Default. Returns structured JSON with summary, key points, and metadata.
+- `markdown`: Returns a Markdown-formatted meeting summary.
+- `html`: Returns an HTML report for browser viewing or download.
+- `summary`: Returns only the executive summary and top key points.
+
+### Example Requests
+
+#### Single File (JSON Output)
+```powershell
+Invoke-WebRequest -Uri "https://meetingtranscriptprocessor.azurewebsites.net/api/ProcessVttFile?code=<your-function-key>" `
+  -Method POST `
+  -ContentType "application/json" `
+  -Body '{"name":"Exclaimer2.vtt","outputFormat":"json"}'
+```
+
+#### Batch Mode (Multiple Files)
+```powershell
+Invoke-WebRequest -Uri "https://meetingtranscriptprocessor.azurewebsites.net/api/ProcessVttFile?code=<your-function-key>" `
+  -Method POST `
+  -ContentType "application/json" `
+  -Body '{"batchMode":true,"fileNames":["Exclaimer2.vtt","Exclaimer3.vtt"],"outputFormat":"json"}'
+```
+
+#### Markdown Output
+```powershell
+Invoke-WebRequest -Uri "https://meetingtranscriptprocessor.azurewebsites.net/api/ProcessVttFile?code=<your-function-key>" `
+  -Method POST `
+  -ContentType "application/json" `
+  -Body '{"name":"Exclaimer2.vtt","outputFormat":"markdown"}'
+```
+
+#### HTML Output
+```powershell
+Invoke-WebRequest -Uri "https://meetingtranscriptprocessor.azurewebsites.net/api/ProcessVttFile?code=<your-function-key>" `
+  -Method POST `
+  -ContentType "application/json" `
+  -Body '{"name":"Exclaimer2.vtt","outputFormat":"html"}'
+```
+
+### Example Response (Single File, JSON)
+```json
+{
+  "success": true,
+  "meetingTitle": "Exclaimer2",
+  "summary": "Executive summary of the meeting...",
+  "keyPoints": [
+    { "title": "Topic discussed", "timestamp": "00:05:12", "speaker": "John", "videoLink": "..." }
+  ],
+  "metadata": {
+    "fileSize": 12345,
+    "processingTimeMs": 2100,
+    "openaiTokens": { "prompt": 1200, "completion": 800, "total": 2000 }
+  }
+}
+```
+
+### Example Response (Batch Mode)
+```json
+{
+  "batchId": "batch_1755288499425",
+  "success": true,
+  "partialSuccess": false,
+  "batchMode": true,
+  "processedFiles": 2,
+  "successfulFiles": 2,
+  "failedFiles": 0,
+  "results": [
+    { "fileName": "Exclaimer2.vtt", "success": true, ... },
+    { "fileName": "Exclaimer3.vtt", "success": true, ... }
+  ],
+  "metadata": {
+    "batchProcessingTimeMs": 4200,
+    "averageTimePerFile": 2100,
+    "concurrencyLimit": 3,
+    "outputFormat": "json",
+    "openaiTokensTotal": { "prompt": 2400, "completion": 1600, "total": 4000 }
+  }
+}
+```
+================================Power Automate Integration====================================
+## Power Automate Integration
+
+### Overview
+
+This section describes how to integrate the Azure Function (`ProcessVttFile`) with Power Automate to automate transcript processing and email delivery of meeting summaries.
+
+### Flow Steps
+
+1. **Trigger**: The flow can be triggered manually or when a new file is created in SharePoint.
+2. **HTTP Action**:  
+   - Method: `POST`
+   - URI: `https://meetingtranscriptprocessor.azurewebsites.net/api/ProcessVttFile?code=<your-function-key>`
+   - Headers:  
+     - `Content-Type`: `application/json`
+   - Body (example for single file):
+     ```json
+     {
+       "name": "Exclaimer7.vtt",
+       "outputFormat": "json"
+     }
+     ```
+3. **Parse JSON**:  
+   - Uses the HTTP response body.
+   - Schema matches the batch or single file response (see "Batch Processing & Output Formats" section).
+4. **Send Email**:  
+   - Uses the parsed summary and key points from the function response.
+   - Example email body:
+     ```
+     Subject: Meeting Summary - Exclaimer7
+
+     Summary:
+     Executive summary of the meeting...
+
+     Key Points:
+     - Topic discussed at 00:05:12 by John
+     - Next topic at 00:10:30 by Jane
+     ```
+
+### Example Flow Diagram
+
+```
+Manual Trigger or SharePoint File Created
+        ↓
+      HTTP POST (to Azure Function)
+        ↓
+      Parse JSON (extract summary/key points)
+        ↓
+      Send Email (with meeting summary)
+```
+
+### Sample Output
+
+**Email Example:**
+```
+Subject: Meeting Summary - Exclaimer7
+
+Summary:
+Signature Management in Dynamics 365 CRM was discussed, including best practices for template editing.
+
+Key Points:
+- Signature Management in Dynamics 365 CRM (00:00:04) - Ernesto Hernandez
+- Template Editing (00:05:12) - Jane Doe
+```
+
+**Power Automate Flow JSON Response Example:**
+```json
+{
+  "success": true,
+  "meetingTitle": "Exclaimer7",
+  "summary": "Signature Management in Dynamics 365 CRM was discussed...",
+  "keyPoints": [
+    { "title": "Signature Management in Dynamics 365 CRM", "timestamp": "00:00:04", "speaker": "Ernesto Hernandez" }
+  ],
+  "metadata": {
+    "processingTimeMs": 9317,
+    "totalKeyPoints": 23,
+    "fileSize": 130267
+  }
+}
+```
+
 ---
 
-*Keep this section updated as you add new features or commands to your project.*
+*This integration enables automated delivery of AI-powered meeting summaries directly to stakeholders via email, leveraging Azure Functions and Power Automate for seamless workflow automation.*
+---
+
+*See above for more details on error handling, available files,
+====================================================================
+
+Next, please specify which area you'd like to focus on:
+
+Automate subscription renewal (timer-triggered Azure Function)
+Enhance webhook processing logic (e.g., richer notification handling)
+Add batch processing or advanced output formats
+Integrate with Power Platform or other Microsoft 365 services
+Troubleshoot or optimize existing code

@@ -1,4 +1,15 @@
 const { app } = require('@azure/functions');
+const sharePointWebhookHandler = require('./src/functions/SharePointWebhook/index.js');
+
+
+
+
+app.http('SharePointWebhook', {
+    methods: ['POST', 'GET'],
+    authLevel: 'function',
+    handler: sharePointWebhookHandler
+});
+
 
 // Register SharePointWebhook using the new programming model
 try {
