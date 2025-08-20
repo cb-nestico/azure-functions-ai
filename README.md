@@ -2050,10 +2050,65 @@ Key Points:
 
 ---
 
-*This integration enables automated delivery of AI-powered meeting summaries directly to stakeholders via email, leveraging Azure Functions and Power Automate for seamless workflow automation.*
----
+====== wednesday August 20 =======================================
+## 🗓️ Recent Changes & Work Log
 
-*See above for more details on error handling, available files,
+### August 19–20, 2025
+
+- **Refactored Function Registration:**  
+  - Moved `app.http` registration for `SharePointWebhook` and `ProcessVttFile` to the root `index.js` for Azure Functions v4 compatibility.
+  - Removed duplicate registration from individual function files.
+
+- **Repository Security Cleanup:**  
+  - Identified and removed Azure secrets from README.md and git history.
+  - Used interactive rebase to sanitize all commits flagged by GitHub push protection.
+  - Successfully pushed the cleaned branch to GitHub.
+
+- **Testing & Validation:**  
+  - Verified local and Azure-hosted endpoints for both functions.
+  - Confirmed function discovery in Azure Portal and tested with sample VTT files.
+
+- **Documentation Updates:**  
+  - Updated troubleshooting and deployment steps.
+  - Added notes on secret management and best practices.
+
+- **Next Steps:**  
+  - Finalize README.md with session summaries and enhancement roadmap.
+  - Plan for batch processing, webhook improvements, and Power Platform integration.
+======================================================================
+## 🗓️ Recent Changes & Work Log (August 19–20, 2025)
+
+### Why These Changes Were Necessary
+
+- **Security:** GitHub push protection blocked repository updates due to secrets (Azure AD Application Secret) in commit history.  
+- **Azure Functions Code Gen Best Practices:** Refactored function registration to use the v4 programming model, centralizing all `app.http` registrations in the root `index.js` for maintainability and Azure compatibility.
+- **Repository Hygiene:** Cleaned commit history to remove all secrets, ensuring compliance with Microsoft and GitHub security standards.
+
+### Key Commands Used
+
+```powershell
+# Interactive rebase to remove secrets from specific commits
+git rebase -i <parent-of-offending-commit>
+# Mark offending commits as 'edit', remove secrets, amend, and continue
+git add README.md
+git commit --amend
+git rebase --continue
+
+# Force push cleaned history to GitHub
+git push --force-with-lease
+# If branch not set upstream
+git push --set-upstream origin feature/enhancement-roadmap
+```
+
+### What Was Accomplished
+
+- Removed all Azure secrets from README.md and commit history.
+- Successfully pushed the cleaned branch to GitHub after resolving push protection errors.
+- Refactored `SharePointWebhook` and `ProcessVttFile` registration to follow Azure Functions v4 best practices.
+- Updated documentation to reflect new registration and deployment workflow.
+- Validated local and Azure-hosted endpoints for both functions.
+- Planned next steps for batch processing, webhook enhancements, and Power Platform integration.
+
 ====================================================================
 
 Next, please specify which area you'd like to focus on:
