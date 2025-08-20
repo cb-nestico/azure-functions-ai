@@ -898,7 +898,7 @@ SharePoint VTT Files → Azure Function → Microsoft Graph → Azure OpenAI →
 - **Function App**: `MeetingTranscriptProcessor`
 - **Resource Group**: `AI-VIDEO`
 - **OpenAI Endpoint**: `https://ai-teams-eastus2.openai.azure.com/`
-- **SharePoint Drive**: `b!CBQCVXchU0qA8oGBdIzBd61vHcJ36LZNnEbTy-oIW70E47oCQhtyTKAADcjBeXfw`
+- **SharePoint Drive**: `your-client-secret`
 
 ### **Environment Variables**
 ```bash
