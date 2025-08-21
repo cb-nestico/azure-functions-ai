@@ -127,7 +127,7 @@ async function processSingleFile(context, fileName, outputFormat = 'json') {
     };
 }
 
-// ✅ Batch Handler with concurrency and token aggregation
+// ✅ Batch Handler with output format support
 async function processBatchFiles(context, fileNames, outputFormat = 'json') {
     const batchStartTime = Date.now();
     const concurrencyLimit = Number(process.env.BATCH_CONCURRENCY || 3);
@@ -184,10 +184,29 @@ async function processBatchFiles(context, fileNames, outputFormat = 'json') {
         return acc;
     }, { prompt: 0, completion: 0, total: 0 });
 
-    return {
-        status: 200,
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
+    // --- Output formatting for batch ---
+    let formattedResults = results;
+    let contentType = 'application/json';
+    let body;
+
+    if (outputFormat.toLowerCase() === 'markdown') {
+        contentType = 'text/markdown';
+        body = results.map(r => r.markdownContent || `## ${r.fileName}\n${r.error ? `**Error:** ${r.error}` : r.summary || ''}`).join('\n\n---\n\n');
+    } else if (outputFormat.toLowerCase() === 'html') {
+        contentType = 'text/html';
+        body = results.map(r => r.htmlContent || `<h2>${r.fileName}</h2><p>${r.error ? `<b>Error:</b> ${r.error}` : r.summary || ''}</p>`).join('<hr>');
+    } else if (outputFormat.toLowerCase() === 'summary') {
+        contentType = 'application/json';
+        formattedResults = results.map(r => ({
+            fileName: r.fileName,
+            summary: r.summary,
+            topKeyPoints: r.keyPoints ? r.keyPoints.slice(0, 5) : [],
+            error: r.error || undefined
+        }));
+        body = JSON.stringify(formattedResults, null, 2);
+    } else {
+        // Default: JSON array
+        body = JSON.stringify({
             batchId: `batch_${Date.now()}`,
             success: anySuccess,
             partialSuccess: anySuccess && !allSuccess,
@@ -205,7 +224,13 @@ async function processBatchFiles(context, fileNames, outputFormat = 'json') {
                 timestamp: new Date().toISOString(),
                 openaiTokensTotal: tokenTotals
             }
-        })
+        }, null, 2);
+    }
+
+    return {
+        status: 200,
+        headers: { 'Content-Type': contentType },
+        body
     };
 }
 
