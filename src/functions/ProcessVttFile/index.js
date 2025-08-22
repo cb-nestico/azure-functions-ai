@@ -4,6 +4,8 @@ const { ClientSecretCredential } = require('@azure/identity');
 const { Client } = require('@microsoft/microsoft-graph-client');
 const { TokenCredentialAuthenticationProvider } = require('@microsoft/microsoft-graph-client/authProviders/azureTokenCredentials');
 const { OpenAI } = require('openai');
+const { Document, Packer, Paragraph, TextRun, HeadingLevel } = require('docx');
+
 
 process.on('unhandledRejection', (reason) => {
     console.error('Unhandled Rejection:', reason);
@@ -110,18 +112,29 @@ app.http('ProcessVttFile', {
 // ✅ Single File Handler
 async function processSingleFile(context, fileName, outputFormat = 'json') {
     const result = await processSingleVttFile(context, fileName, outputFormat);
-    const status = result && result.status ? result.status : (result?.success ? 200 : 500);
 
+    // If outputFormat is 'word' and result is a direct HTTP response, return it
+    if (
+        outputFormat.toLowerCase() === 'word' &&
+        result &&
+        typeof result.status === 'number' &&
+        result.headers &&
+        typeof result.body === 'string'
+    ) {
+        return result;
+    }
+
+    // HTML direct response
     if (outputFormat.toLowerCase() === 'html' && result.htmlContent) {
         return {
-            status: status,
+            status: result.status || 200,
             headers: { 'Content-Type': 'text/html' },
             body: result.htmlContent
         };
     }
 
     return {
-        status: status,
+        status: result.status || (result?.success ? 200 : 500),
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(result)
     };
@@ -613,6 +626,8 @@ async function applyOutputFormat(context, result, outputFormat) {
             return generateMarkdownOutput(context, result);
         case 'summary':
             return generateSummaryOutput(context, result);
+        case 'word':
+            return await generateWordOutput(context, result); // <-- Add this line
         case 'json':
         default:
             return result;
@@ -679,16 +694,14 @@ function generateHtmlOutput(context, result) {
 </body>
 </html>`;
 
+    // Return only the HTML string for direct response
     return {
-        success: true,
-        outputFormat: 'html',
-        htmlContent: html,
-        downloadable: {
-            contentType: 'text/html',
-            fileName: `${meetingTitle.replace(/[^a-z0-9]/gi, '_')}_Analysis.html`,
-            content: html,
-            size: html.length
-        }
+        status: 200,
+        headers: {
+            'Content-Type': 'text/html',
+            'Content-Disposition': `inline; filename="${meetingTitle.replace(/[^a-z0-9]/gi, '_')}_Analysis.html"`
+        },
+        body: html
     };
 }
 
@@ -736,6 +749,87 @@ ${keyPoints.map((point, index) => `### ${index + 1}. ${point.timestamp} - ${poin
         }
     };
 }
+//Add the Word Export Helper Function
+// ...existing code...
+
+// Update generateWordOutput to return only the base64 string and headers for direct download
+async function generateWordOutput(context, result) {
+    const { meetingTitle, keyPoints, summary, metadata } = result;
+
+    const doc = new Document({
+        sections: [{
+            properties: {},
+            children: [
+                new Paragraph({
+                    text: `Meeting Analysis: ${meetingTitle}`,
+                    heading: HeadingLevel.TITLE,
+                }),
+                new Paragraph({
+                    text: `Generated: ${new Date().toLocaleDateString()} at ${new Date().toLocaleTimeString()}`,
+                }),
+                new Paragraph({
+                    text: `Processing Time: ${metadata.processingTimeMs}ms | Key Points: ${keyPoints.length}`,
+                }),
+                new Paragraph({ text: "" }),
+                new Paragraph({
+                    text: "Executive Summary",
+                    heading: HeadingLevel.HEADING_1,
+                }),
+                new Paragraph({ text: summary }),
+                new Paragraph({ text: "" }),
+                new Paragraph({
+                    text: `Key Discussion Points (${keyPoints.length} items)`,
+                    heading: HeadingLevel.HEADING_1,
+                }),
+                ...keyPoints.map((point, idx) =>
+                    new Paragraph({
+                        children: [
+                            new TextRun({ text: `${idx + 1}. `, bold: true }),
+                            point.timestamp ? new TextRun({ text: `${point.timestamp} `, bold: true }) : null,
+                            point.speaker ? new TextRun({ text: `${point.speaker} `, italics: true }) : null,
+                            new TextRun({ text: point.title }),
+                            point.videoLink ? new TextRun({ text: ` [Video Link]`, underline: true, color: "007ACC", hyperlink: point.videoLink }) : null,
+                        ].filter(Boolean),
+                    })
+                ),
+                new Paragraph({ text: "" }),
+                new Paragraph({
+                    text: "Processing Information",
+                    heading: HeadingLevel.HEADING_2,
+                }),
+                new Paragraph({
+                    text: `File Size: ${Math.round(metadata.fileSize / 1024)}KB | Timestamps: ${metadata.totalTimestamps} | Processing Time: ${metadata.processingTimeMs}ms`,
+                }),
+                new Paragraph({
+                    text: `Tokens: prompt ${metadata.openaiTokens?.prompt || 0}, completion ${metadata.openaiTokens?.completion || 0}, total ${metadata.openaiTokens?.total || 0}`,
+                }),
+                new Paragraph({ text: "" }),
+                new Paragraph({
+                    text: `File: ${result.actualFile} | Processed: ${metadata.processedAt}`,
+                }),
+                new Paragraph({
+                    text: "Generated by Azure Functions VTT Meeting Transcript Processor",
+                    italics: true,
+                }),
+            ],
+        }],
+    });
+
+    const buffer = await Packer.toBuffer(doc);
+
+    // Return only the base64 string and headers for direct download
+    return {
+        status: 200,
+        headers: {
+            'Content-Type': 'text/plain',
+            'Content-Disposition': `attachment; filename="${meetingTitle.replace(/[^a-z0-9]/gi, '_')}_Analysis.docx"`,
+            'Content-Transfer-Encoding': 'base64'
+        },
+        body: Buffer.from(buffer).toString('base64')
+    };
+}
+
+
 
 function generateSummaryOutput(context, result) {
     const { meetingTitle, keyPoints, summary, metadata } = result;

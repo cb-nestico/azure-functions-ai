@@ -2343,3 +2343,89 @@ Confirm this plan with you.
 Refactor and enhance ProcessVttFile for batch processing and output formats.
 Add/Update tests and documentation.
 Deploy and validate in Azure.
+======================================
+Recommended Areas to Focus Next
+Based on your README and completed work, here are the top areas for further enhancement:
+
+Performance Optimization & Scalability
+
+Improve batch concurrency (configurable limits, load balancing).
+Profile and optimize processing time for large batches and files.
+Add monitoring for function cold starts and throttling.
+Advanced Output Formats
+
+Add Word/PDF export for meeting summaries. (IN PROGRESS)
+Enable direct export to SharePoint lists or Excel.
+SharePoint Webhook Automation
+
+Implement automatic processing when new files are uploaded (real-time triggers).
+Enhance webhook security and validation.
+Deeper Power Platform Integration
+
+Build ready-to-use Power Automate templates.
+Add Teams notifications and adaptive cards.
+Integrate with Dynamics 365 for CRM record creation.
+Observability & Monitoring
+
+Add Application Insights custom metrics for batch jobs, token usage, and errors.
+Create dashboards for usage, performance, and error tracking.
+Security & Compliance
+
+Migrate to managed identity for Graph API (remove client secrets).
+Integrate with Azure Key Vault for secret management.
+Audit and document compliance for enterprise use.
+Automated Testing & CI/CD
+
+Add automated unit/integration tests for all endpoints.
+Set up CI/CD pipeline for deployment and validation.
+
+PENDING WORK =================
+==============================================
+Plan for Next Enhancements: Word/PDF Export & SharePoint Webhook Automation (Azure Functions Code Gen Best Practices)
+
+1. Summarize Topic
+You have completed:
+
+Subscription renewal automation
+Enhanced webhook logic
+Batch processing and output formats
+Power Platform integration
+Next focus areas:
+
+Word/PDF export for meeting summaries
+SharePoint webhook automation for real-time processing
+2. Implementation Plan
+A. Word/PDF Export
+Goal:
+Enable users to export meeting summaries and key points as Word (.docx) or PDF documents.
+
+Steps:
+
+Choose a Node.js library for document generation:
+For Word: docx or officegen
+For PDF: pdfkit or puppeteer (for HTML-to-PDF)
+Add an outputFormat option (word, pdf) to the API.
+Implement formatting logic:
+Convert summary, key points, and metadata into a structured document.
+Return the document as a downloadable file (set correct Content-Type).
+Test with single and batch requests.
+Update README with usage examples.
+B. SharePoint Webhook Automation
+Goal:
+Automatically trigger transcript processing when new VTT files are uploaded to SharePoint.
+
+Steps:
+
+Configure Microsoft Graph webhook subscriptions for your SharePoint drive.
+Use the existing CLI script (manage-subscriptions.js) or Azure Portal.
+Enhance the SharePointWebhook handler:
+On receiving a notification, automatically call ProcessVttFile for the new file.
+Log results and errors for observability.
+Add security validation for webhook requests (client state, validation token).
+Test end-to-end: upload a file to SharePoint, confirm automatic processing and summary generation.
+Document the webhook setup and flow in README.
+3. Next Steps
+Confirm this plan with you.
+Start with Word export (quick win), then PDF.
+Implement webhook automation and test with SharePoint uploads.
+Update documentation and usage examples
