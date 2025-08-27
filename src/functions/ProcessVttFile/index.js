@@ -4,8 +4,7 @@ const { ClientSecretCredential } = require('@azure/identity');
 const { Client } = require('@microsoft/microsoft-graph-client');
 const { TokenCredentialAuthenticationProvider } = require('@microsoft/microsoft-graph-client/authProviders/azureTokenCredentials');
 const { OpenAI } = require('openai');
-const { Document, Packer, Paragraph, TextRun, HeadingLevel } = require('docx');
-
+const { Document, Packer, Paragraph, TextRun, HeadingLevel, ExternalHyperlink } = require('docx');
 
 process.on('unhandledRejection', (reason) => {
     console.error('Unhandled Rejection:', reason);
@@ -135,8 +134,6 @@ async function processSingleFile(context, fileName, outputFormat = 'json') {
         body: JSON.stringify(result)
     };
 }
-    
-
 
 /**
  * Extracts video URL from SharePoint file metadata.
@@ -158,36 +155,53 @@ function getVideoUrlFromMetadata(fileMetadata) {
  */
 function createVideoLink(timestamp, videoUrl) {
     if (!timestamp || !videoUrl) return null;
-    const [hours, minutes, seconds] = timestamp.split(':');
-    return `${videoUrl}#t=${hours}h${minutes}m${seconds}s`;
-}
-/**
- * Main output formatter for meeting summary.
- * Ensures keyPoints have working video links.
- */
-function formatMeetingOutput({ summary, keyPoints, metadata, meetingTitle, date, fileMetadata, actualFile }) {
-    const videoUrl = getVideoUrlFromMetadata(fileMetadata);
 
-    return {
-        success: true,
-        meetingTitle: meetingTitle,
-        date: date,
-        videoUrl: videoUrl,
-        file: actualFile,
-        actualFile: actualFile,
-        summary: summary,
-        keyPoints: Array.isArray(keyPoints)
-            ? keyPoints.map(point => ({
-                ...point,
-                videoLink: createVideoLink(point.timestamp, videoUrl)
-            }))
-            : [],
-        metadata: {
-            ...metadata,
-            videoUrl: videoUrl
+    // Normalize timestamp (accepts ss, mm:ss, hh:mm:ss, optional .ms)
+    const normalize = (ts) => {
+        const noMs = String(ts).split('.')[0].trim();
+        const parts = noMs.split(':').map(p => p.trim()).filter(Boolean);
+        let h = 0, m = 0, s = 0;
+        if (parts.length === 1) {
+            s = Number(parts[0]) || 0;
+        } else if (parts.length === 2) {
+            m = Number(parts[0]) || 0;
+            s = Number(parts[1]) || 0;
+        } else {
+            h = Number(parts[0]) || 0;
+            m = Number(parts[1]) || 0;
+            s = Number(parts[2]) || 0;
         }
+        const totalSeconds = h * 3600 + m * 60 + s;
+        return { h, m, s, totalSeconds };
     };
+
+    const { h, m, s, totalSeconds } = normalize(timestamp);
+    const pad = n => String(Math.max(0, Math.floor(n))).padStart(2, '0');
+
+    // Append query param safely
+    const appendQuery = (url, key, value) => {
+        const sep = url.includes('?') ? '&' : '?';
+        return `${url}${sep}${encodeURIComponent(key)}=${encodeURIComponent(String(value))}`;
+    };
+
+    const secondsCandidate = appendQuery(videoUrl, 'start', totalSeconds);
+    const startTimeCandidate = appendQuery(videoUrl, 'startTime', totalSeconds);
+    const tQueryCandidate = appendQuery(videoUrl, 't', totalSeconds);
+    const fragmentCandidate = `${videoUrl}#t=${pad(h)}h${pad(m)}m${pad(s)}s`;
+
+    // If it's Stream/SharePoint/OneDrive-hosted, prefer seconds-based queries
+    if (/stream\.microsoft\.com|microsoftstream|sharepoint\.com|onedrive\.live\.com|my\.sharepoint\.com/i.test(videoUrl)) {
+        // try startTime, then start, then t, then fragment
+        if (startTimeCandidate) return startTimeCandidate;
+        if (secondsCandidate) return secondsCandidate;
+        if (tQueryCandidate) return tQueryCandidate;
+        return fragmentCandidate;
+    }
+
+    // Default: use fragment for general players
+    return fragmentCandidate;
 }
+
 // ✅ Batch Handler with output format support
 async function processBatchFiles(context, fileNames, outputFormat = 'json') {
     const batchStartTime = Date.now();
@@ -293,8 +307,6 @@ async function processBatchFiles(context, fileNames, outputFormat = 'json') {
         headers: { 'Content-Type': contentType },
         body
     };
-
-
 }
 
 /**
@@ -367,12 +379,8 @@ function formatMeetingOutputAsHtml({
     `;
 }
 
-
-
-
 // ...existing processSingleVttFile and helper functions remain unchanged...
-// (You can keep your previous implementation for processSingleVttFile, applyOutputFormat, chunkArray, etc.)
-
+// Full implementation below (with fileFields moved and passed into extractMeetingMetadata)
 
 // ✅ Granular Error Logging & Debug Statements in processSingleVttFile
 async function processSingleVttFile(context, fileName, outputFormat = 'json') {
@@ -504,8 +512,11 @@ async function processSingleVttFile(context, fileName, outputFormat = 'json') {
         }
         context.log(`✅ Found file: ${targetFile.name} (${targetFile.size} bytes)`);
 
+        // --- IMPORTANT: fileFields declared here so it is available below when extracting metadata ---
         let vttContent;
         let wasTruncated = false;
+        let fileFields = {}; // <-- moved to outer scope
+
         try {
             context.log(`🔎 Fetching file details for download URL (id: ${targetFile.id})`);
             const fileDetails = await graphClient
@@ -525,6 +536,17 @@ async function processSingleVttFile(context, fileName, outputFormat = 'json') {
                     processedAt: new Date().toISOString(),
                     processingTimeMs: Date.now() - processingStartTime
                 };
+            }
+
+            // Try to fetch the SharePoint listItem fields (custom columns)
+            try {
+                const fieldsRes = await graphClient
+                    .api(`/drives/${config.sharepointDriveId}/items/${targetFile.id}/listItem/fields`)
+                    .get();
+                fileFields = fieldsRes || {};
+                context.log('🔎 Retrieved list item fields keys:', Object.keys(fileFields));
+            } catch (fieldsErr) {
+                context.log.warn('⚠️ Could not retrieve list item fields (non-fatal):', fieldsErr?.message || fieldsErr);
             }
 
             const httpFetch = globalThis.fetch ? globalThis.fetch.bind(globalThis) : fetch;
@@ -574,7 +596,8 @@ async function processSingleVttFile(context, fileName, outputFormat = 'json') {
 
         let meetingMetadata;
         try {
-            meetingMetadata = extractMeetingMetadata(vttContent, targetFile, config.sharepointSiteUrl);
+            // pass fileFields so extractMeetingMetadata can prefer list item URL columns
+            meetingMetadata = extractMeetingMetadata(vttContent, targetFile, config.sharepointSiteUrl, fileFields);
             context.log(`✅ Extracted meeting metadata: ${JSON.stringify(meetingMetadata)}`);
         } catch (metaError) {
             context.log.error('❌ Error extracting meeting metadata:', metaError?.message || metaError);
@@ -653,11 +676,12 @@ ${transcriptText}
         }
 
         // Build video links if available
-        if (keyPoints.length > 0) {
+        // Build video links using centralized helper
+        if (Array.isArray(keyPoints) && keyPoints.length > 0) {
             keyPoints = keyPoints.map(point => ({
                 ...point,
-                videoLink: point?.timestamp && meetingMetadata.videoUrl
-                    ? `${meetingMetadata.videoUrl}#t=${(point.timestamp || '').replace(/:/g, 'h').replace(/h(\d{2})$/, 'm$1s')}`
+                videoLink: (point?.timestamp && meetingMetadata?.videoUrl)
+                    ? createVideoLink(point.timestamp, meetingMetadata.videoUrl) || (point?.videoLink || "")
                     : (point?.videoLink || "")
             }));
         }
@@ -672,8 +696,8 @@ ${transcriptText}
                 title,
                 timestamp: timestampBlocks[idx]?.timestamp || "",
                 speaker: timestampBlocks[idx]?.speaker || "",
-                videoLink: timestampBlocks[idx]?.timestamp && meetingMetadata.videoUrl
-                    ? `${meetingMetadata.videoUrl}#t=${(timestampBlocks[idx].timestamp || '').replace(/:/g, 'h').replace(/h(\d{2})$/, 'm$1s')}`
+                videoLink: (timestampBlocks[idx]?.timestamp && meetingMetadata?.videoUrl)
+                    ? createVideoLink(timestampBlocks[idx].timestamp, meetingMetadata.videoUrl)
                     : ""
             }));
         }
@@ -877,11 +901,8 @@ ${keyPoints.map((point, index) => `### ${index + 1}. ${point.timestamp} - ${poin
         }
     };
 }
-//Add the Word Export Helper Function
-// ...existing code...
 
-// Update generateWordOutput to return only the base64 string and headers for direct download
-// ...existing code...
+// Word generation (keeps ExternalHyperlink options-object form that created clickable links earlier)
 async function generateWordOutput(context, result) {
     const { meetingTitle, keyPoints, summary, metadata } = result;
 
@@ -910,14 +931,19 @@ async function generateWordOutput(context, result) {
                     text: `Key Discussion Points (${keyPoints.length} items)`,
                     heading: HeadingLevel.HEADING_1,
                 }),
-                ...keyPoints.map((point, idx) =>
+               ...keyPoints.map((point, idx) =>
                     new Paragraph({
                         children: [
                             new TextRun({ text: `${idx + 1}. `, bold: true }),
                             point.timestamp ? new TextRun({ text: `${point.timestamp} `, bold: true }) : null,
                             point.speaker ? new TextRun({ text: `${point.speaker} `, italics: true }) : null,
                             new TextRun({ text: point.title }),
-                            point.videoLink ? new TextRun({ text: ` [Video Link]`, underline: true, color: "007ACC", hyperlink: point.videoLink }) : null,
+                            (point.videoLink && /^https?:\/\//i.test(point.videoLink))
+                                ? new ExternalHyperlink({
+                                      children: [ new TextRun({ text: ' [Video Link]', style: 'Hyperlink' }) ],
+                                      link: point.videoLink
+                                  })
+                                : null,
                         ].filter(Boolean),
                     })
                 ),
@@ -955,9 +981,6 @@ async function generateWordOutput(context, result) {
         body: Buffer.from(buffer) // binary Buffer for Azure Functions runtime
     };
 }
-// ...existing code...
-
-
 
 function generateSummaryOutput(context, result) {
     const { meetingTitle, keyPoints, summary, metadata } = result;
@@ -996,7 +1019,6 @@ function deriveKeyPointsFallbackFromText(text) {
         .slice(0, 8);
 }
 
-// ...existing code...
 function parseVttTimestamps(vttContent) {
     if (!vttContent) return [];
 
@@ -1007,13 +1029,26 @@ function parseVttTimestamps(vttContent) {
     for (let i = 0; i < lines.length; i++) {
         const raw = lines[i].trim();
 
-        // Match common VTT time range lines like "00:00:05.000 --> 00:00:10.000"
-        const rangeMatch = raw.match(/(\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?)\s*-->\s*(\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?)/);
+        // Accept mm:ss(.ms) or hh:mm:ss(.ms) time ranges like "00:00:05.000 --> 00:00:10.000" or "12:34.500 --> 12:40.000"
+        const rangeMatch = raw.match(/((?:\d{1,2}:)?\d{2}:\d{2}(?:\.\d{1,3})?)\s*-->\s*((?:\d{1,2}:)?\d{2}:\d{2}(?:\.\d{1,3})?)/);
         if (rangeMatch) {
             // push previous block
             if (currentBlock) contentBlocks.push(currentBlock);
-            // normalize timestamp to HH:MM:SS (drop ms)
-            const ts = rangeMatch[1].split('.')[0];
+
+            // normalize timestamp function -> returns HH:MM:SS
+            const normalize = (ts) => {
+                const noMs = ts.split('.')[0].trim();
+                const parts = noMs.split(':');
+                if (parts.length === 2) {
+                    // mm:ss -> prepend 00 hours
+                    parts.unshift('00');
+                }
+                // ensure two-digit parts
+                const [h, m, s] = parts.map(p => p.padStart(2, '0'));
+                return `${h}:${m}:${s}`;
+            };
+
+            const ts = normalize(rangeMatch[1]);
             currentBlock = { timestamp: ts, content: '', speaker: null };
             continue;
         }
@@ -1053,16 +1088,39 @@ function parseVttTimestamps(vttContent) {
     // trim content
     return contentBlocks.map(b => ({ ...b, content: (b.content || '').trim() }));
 }
-// ...existing code...
 
-function extractMeetingMetadata(vttContent, fileMetadata, sharepointSiteUrl) {
+function extractMeetingMetadata(vttContent, fileMetadata, sharepointSiteUrl, fileFields = {}) {
     const noteMatch = vttContent.match(/NOTE\s+(.+)/);
     const meetingTitle = noteMatch ? noteMatch[1].trim()
-        : fileMetadata.name.replace('.vtt', '').replace(/[-_]/g, ' ').replace(/\b\w/g, l => l.toUpperCase());
+        : (fileMetadata.name || '').replace('.vtt', '').replace(/[-_]/g, ' ').replace(/\b\w/g, l => l.toUpperCase());
 
-    const videoUrl = sharepointSiteUrl
-        ? `${sharepointSiteUrl}/Shared%20Documents/${fileMetadata.name.replace('.vtt', '')}`
-        : "https://yourtenant.sharepoint.com/video-placeholder";
+    // Prefer explicit URL fields on the list item (common names)
+    const possibleFieldUrl =
+        (fileFields && (fileFields.URL || fileFields.VideoURL || fileFields.videoUrl || fileFields.Video || fileFields['URL_0'])) ||
+        fileMetadata?.VideoURL ||
+        fileMetadata?.videoUrl ||
+        fileMetadata?.webUrl ||
+        null;
+
+    // Normalize possibleFieldUrl shapes (string or object)
+    let videoUrl = null;
+    if (possibleFieldUrl) {
+        if (typeof possibleFieldUrl === 'string') {
+            videoUrl = possibleFieldUrl;
+        } else if (typeof possibleFieldUrl === 'object') {
+            videoUrl = possibleFieldUrl.Url || possibleFieldUrl.url || possibleFieldUrl.Value || possibleFieldUrl.value || null;
+        }
+    }
+
+    // Ensure https and decode/encode spaces if needed
+    if (videoUrl && typeof videoUrl === 'string') {
+        videoUrl = videoUrl.trim();
+    }
+
+    // Fallback to site path if no explicit column present
+    if (!videoUrl && sharepointSiteUrl && fileMetadata && fileMetadata.name) {
+        videoUrl = `${sharepointSiteUrl}/Shared%20Documents/${encodeURIComponent(fileMetadata.name.replace('.vtt', ''))}`;
+    }
 
     return {
         title: meetingTitle,
@@ -1113,4 +1171,4 @@ if (typeof module !== 'undefined' && module.exports) {
         extractMeetingMetadata,
         deriveKeyPointsFallbackFromText
     };
-}
+} 
