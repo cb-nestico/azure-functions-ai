@@ -113,33 +113,81 @@ app.http('ProcessVttFile', {
 async function processSingleFile(context, fileName, outputFormat = 'json') {
     const result = await processSingleVttFile(context, fileName, outputFormat);
 
-    // If outputFormat is 'word' and result is a direct HTTP response, return it
+    // If result is a direct HTTP response (status, headers, body), return it
+    // Accept string, Buffer, or Uint8Array bodies so binary downloads (e.g., .docx) work.
     if (
-        outputFormat.toLowerCase() === 'word' &&
         result &&
         typeof result.status === 'number' &&
         result.headers &&
-        typeof result.body === 'string'
+        (
+            typeof result.body === 'string' ||
+            (typeof Buffer !== 'undefined' && Buffer.isBuffer(result.body)) ||
+            (result.body instanceof Uint8Array)
+        )
     ) {
         return result;
     }
 
-    // HTML direct response
-    if (outputFormat.toLowerCase() === 'html' && result.htmlContent) {
-        return {
-            status: result.status || 200,
-            headers: { 'Content-Type': 'text/html' },
-            body: result.htmlContent
-        };
-    }
-
+    // Fallback: wrap as JSON
     return {
         status: result.status || (result?.success ? 200 : 500),
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(result)
     };
 }
+    
 
+
+/**
+ * Extracts video URL from SharePoint file metadata.
+ * Falls back to a default if not present.
+ */
+function getVideoUrlFromMetadata(fileMetadata) {
+    // Try common property names
+    return (
+        fileMetadata?.VideoURL ||
+        fileMetadata?.videoUrl ||
+        fileMetadata?.video_url ||
+        fileMetadata?.webUrl || // SharePoint Graph property
+        "https://yourtenant.sharepoint.com/video-placeholder"
+    );
+}
+
+/**
+ * Converts a timestamp (HH:MM:SS) to SharePoint video link format.
+ */
+function createVideoLink(timestamp, videoUrl) {
+    if (!timestamp || !videoUrl) return null;
+    const [hours, minutes, seconds] = timestamp.split(':');
+    return `${videoUrl}#t=${hours}h${minutes}m${seconds}s`;
+}
+/**
+ * Main output formatter for meeting summary.
+ * Ensures keyPoints have working video links.
+ */
+function formatMeetingOutput({ summary, keyPoints, metadata, meetingTitle, date, fileMetadata, actualFile }) {
+    const videoUrl = getVideoUrlFromMetadata(fileMetadata);
+
+    return {
+        success: true,
+        meetingTitle: meetingTitle,
+        date: date,
+        videoUrl: videoUrl,
+        file: actualFile,
+        actualFile: actualFile,
+        summary: summary,
+        keyPoints: Array.isArray(keyPoints)
+            ? keyPoints.map(point => ({
+                ...point,
+                videoLink: createVideoLink(point.timestamp, videoUrl)
+            }))
+            : [],
+        metadata: {
+            ...metadata,
+            videoUrl: videoUrl
+        }
+    };
+}
 // ✅ Batch Handler with output format support
 async function processBatchFiles(context, fileNames, outputFormat = 'json') {
     const batchStartTime = Date.now();
@@ -245,7 +293,82 @@ async function processBatchFiles(context, fileNames, outputFormat = 'json') {
         headers: { 'Content-Type': contentType },
         body
     };
+
+
 }
+
+/**
+ * Formats meeting output as readable HTML.
+ */
+function formatMeetingOutputAsHtml({
+    meetingTitle,
+    date,
+    videoUrl,
+    summary,
+    keyPoints = [],
+    metadata = {},
+    timestampBlocks = [],
+    actualFile
+}) {
+    return `
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>Meeting Summary - ${meetingTitle}</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 2em; }
+        h1, h2 { color: #007ACC; }
+        ul { padding-left: 1.5em; }
+        .keypoints li { margin-bottom: 0.5em; }
+        .metadata { font-size: 0.95em; color: #555; }
+        .timestamp-blocks { font-size: 0.95em; color: #444; margin-top: 2em; }
+    </style>
+</head>
+<body>
+    <h1>Meeting Summary: ${meetingTitle}</h1>
+    <div class="metadata">
+        <strong>Date:</strong> ${date}<br>
+        <strong>File:</strong> ${actualFile}<br>
+        <strong>Video URL:</strong> <a href="${videoUrl}" target="_blank">${videoUrl}</a>
+    </div>
+    <h2>Executive Summary</h2>
+    <p>${summary}</p>
+    <h2>Key Discussion Points</h2>
+    <ul class="keypoints">
+        ${keyPoints.map(point => `
+            <li>
+                <strong>${point.title}</strong>
+                ${point.timestamp ? `(<a href="${point.videoLink}" target="_blank">${point.timestamp}</a>)` : ""}
+                ${point.speaker ? `- <em>${point.speaker}</em>` : ""}
+            </li>
+        `).join('')}
+    </ul>
+    <h2>Metadata</h2>
+    <ul class="metadata">
+        ${Object.entries(metadata).map(([k, v]) => `<li><strong>${k}:</strong> ${typeof v === 'object' ? JSON.stringify(v) : v}</li>`).join('')}
+    </ul>
+    ${timestampBlocks && timestampBlocks.length > 0 ? `
+        <div class="timestamp-blocks">
+            <h2>Transcript Blocks</h2>
+            <ul>
+                ${timestampBlocks.map(block => `
+                    <li>
+                        <strong>${block.timestamp}</strong>:
+                        ${block.speaker ? `<em>${block.speaker}</em>:` : ""}
+                        ${block.content}
+                    </li>
+                `).join('')}
+            </ul>
+        </div>
+    ` : ""}
+</body>
+</html>
+    `;
+}
+
+
+
 
 // ...existing processSingleVttFile and helper functions remain unchanged...
 // (You can keep your previous implementation for processSingleVttFile, applyOutputFormat, chunkArray, etc.)
@@ -621,13 +744,18 @@ ${transcriptText}
 async function applyOutputFormat(context, result, outputFormat) {
     switch (outputFormat.toLowerCase()) {
         case 'html':
-            return generateHtmlOutput(context, result);
+            // Use the new HTML formatter for readable output
+            return {
+                status: 200,
+                headers: { 'Content-Type': 'text/html' },
+                body: formatMeetingOutputAsHtml(result)
+            };
         case 'markdown':
             return generateMarkdownOutput(context, result);
         case 'summary':
             return generateSummaryOutput(context, result);
         case 'word':
-            return await generateWordOutput(context, result); // <-- Add this line
+            return await generateWordOutput(context, result);
         case 'json':
         default:
             return result;
@@ -753,6 +881,7 @@ ${keyPoints.map((point, index) => `### ${index + 1}. ${point.timestamp} - ${poin
 // ...existing code...
 
 // Update generateWordOutput to return only the base64 string and headers for direct download
+// ...existing code...
 async function generateWordOutput(context, result) {
     const { meetingTitle, keyPoints, summary, metadata } = result;
 
@@ -817,17 +946,16 @@ async function generateWordOutput(context, result) {
 
     const buffer = await Packer.toBuffer(doc);
 
-    // Return only the base64 string and headers for direct download
     return {
         status: 200,
         headers: {
-            'Content-Type': 'text/plain',
-            'Content-Disposition': `attachment; filename="${meetingTitle.replace(/[^a-z0-9]/gi, '_')}_Analysis.docx"`,
-            'Content-Transfer-Encoding': 'base64'
+            'Content-Type': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+            'Content-Disposition': `attachment; filename="${meetingTitle.replace(/[^a-z0-9]/gi, '_')}_Analysis.docx"`
         },
-        body: Buffer.from(buffer).toString('base64')
+        body: Buffer.from(buffer) // binary Buffer for Azure Functions runtime
     };
 }
+// ...existing code...
 
 
 
@@ -868,34 +996,64 @@ function deriveKeyPointsFallbackFromText(text) {
         .slice(0, 8);
 }
 
+// ...existing code...
 function parseVttTimestamps(vttContent) {
     if (!vttContent) return [];
 
     const contentBlocks = [];
-    const lines = vttContent.split('\n');
+    const lines = vttContent.split(/\r?\n/);
     let currentBlock = null;
 
     for (let i = 0; i < lines.length; i++) {
-        const line = lines[i].trim();
+        const raw = lines[i].trim();
 
-        const timestampMatch = line.match(/(\d{2}:\d{2}:\d{2})\.\d{3}/);
-        if (timestampMatch) {
+        // Match common VTT time range lines like "00:00:05.000 --> 00:00:10.000"
+        const rangeMatch = raw.match(/(\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?)\s*-->\s*(\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?)/);
+        if (rangeMatch) {
+            // push previous block
             if (currentBlock) contentBlocks.push(currentBlock);
-            currentBlock = { timestamp: timestampMatch[1], content: '', speaker: null };
-        } else if (currentBlock && line.length > 0) {
-            const speakerMatch = line.match(/<v\s+([^>]+)>(.+)<\/v>/);
-            if (speakerMatch) {
-                currentBlock.speaker = speakerMatch[1];
-                currentBlock.content += speakerMatch[2] + ' ';
-            } else {
-                currentBlock.content += line + ' ';
-            }
+            // normalize timestamp to HH:MM:SS (drop ms)
+            const ts = rangeMatch[1].split('.')[0];
+            currentBlock = { timestamp: ts, content: '', speaker: null };
+            continue;
         }
+
+        if (!currentBlock) continue;
+
+        if (raw.length === 0) {
+            // blank line separates blocks
+            if (currentBlock) {
+                contentBlocks.push(currentBlock);
+                currentBlock = null;
+            }
+            continue;
+        }
+
+        // Handle speaker markup <v Name>text</v>
+        const vTag = raw.match(/<v\s+([^>]+)>(.+)<\/v>/i);
+        if (vTag) {
+            currentBlock.speaker = vTag[1].trim();
+            currentBlock.content += vTag[2].trim() + ' ';
+            continue;
+        }
+
+        // Handle "Speaker: text" plain lines
+        const colonSpeaker = raw.match(/^([^:]{1,40}):\s*(.+)/);
+        if (colonSpeaker) {
+            currentBlock.speaker = currentBlock.speaker || colonSpeaker[1].trim();
+            currentBlock.content += colonSpeaker[2].trim() + ' ';
+            continue;
+        }
+
+        // Otherwise treat as content continuation
+        currentBlock.content += raw + ' ';
     }
 
     if (currentBlock) contentBlocks.push(currentBlock);
-    return contentBlocks;
+    // trim content
+    return contentBlocks.map(b => ({ ...b, content: (b.content || '').trim() }));
 }
+// ...existing code...
 
 function extractMeetingMetadata(vttContent, fileMetadata, sharepointSiteUrl) {
     const noteMatch = vttContent.match(/NOTE\s+(.+)/);

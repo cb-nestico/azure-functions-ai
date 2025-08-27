@@ -2267,7 +2267,202 @@ $response
 
 
 
-===========================================================
+=====================Agust 22 ======================================
+# Azure Functions AI VTT Meeting Transcript Processor
+
+## Overview
+
+This project is an **Azure Functions** app that processes meeting transcript files in VTT format from SharePoint, uses Azure OpenAI to generate executive summaries and key points, and exports results in multiple formats (JSON, HTML, Markdown, and Word).  
+It is designed for organizations that want to automate meeting analysis, documentation, and sharing.
+
+---
+
+## Features
+
+- **Processes VTT files** from SharePoint using Microsoft Graph API.
+- **AI-powered summaries and key points** using Azure OpenAI (GPT-4o).
+- **Exports results** in JSON, HTML, Markdown, and Word (.docx, as base64).
+- **Batch processing** with concurrency control.
+- **Direct download support** for Word and HTML exports.
+- **Detailed logging and error handling** for troubleshooting.
+
+---
+
+## Purpose of Recent Changes
+
+- **Fix Word Export:**  
+  Ensures that when requesting `"outputFormat": "word"`, the function returns a raw base64 string (not JSON) for direct conversion to `.docx`.
+- **PowerShell Compatibility:**  
+  Allows users to save the response and convert it to a Word file using PowerShell:
+  ```powershell
+  [IO.File]::WriteAllBytes("meeting.docx", [Convert]::FromBase64String((Get-Content raw_base64.txt)))
+  ```
+- **Error Handling:**  
+  If the output is JSON (not base64), PowerShell conversion fails with a "not a valid Base-64 string" error.
+
+---
+
+## End Result
+
+- **Success:**  
+  - The output in `raw_base64.txt` is a base64 string.
+  - PowerShell conversion produces a valid Word document.
+  - The document contains meeting title, summary, key points, and metadata.
+
+- **Failure:**  
+  - The output in `raw_base64.txt` is a JSON object (not base64).
+  - PowerShell conversion fails with a base64 error.
+  - No Word document is generated.
+
+---
+
+## Setup Instructions
+
+1. **Clone the repository:**
+   ```sh
+   git clone <your-repo-url>
+   cd AZURE FUNCTIONS-AI
+   ```
+
+2. **Configure environment variables:**  
+   Set the following in your local.settings.json or Azure portal:
+   - TENANT_ID
+   - CLIENT_ID
+   - CLIENT_SECRET
+   - OPENAI_ENDPOINT
+   - OPENAI_KEY
+   - OPENAI_DEPLOYMENT
+   - SHAREPOINT_DRIVE_ID
+   - SHAREPOINT_SITE_URL
+
+3. **Install dependencies:**
+   ```sh
+   npm install
+   ```
+
+4. **Run locally:**
+   ```sh
+   func start
+   ```
+
+---
+
+## Usage
+
+### API Request Example
+
+```json
+POST /api/ProcessVttFile
+{
+  "name": "MeetingTranscript.vtt",
+  "outputFormat": "word"
+}
+```
+
+### PowerShell Export Example
+
+```powershell
+$response = Invoke-WebRequest -Method Post -Uri $funcUrl -Body $body -ContentType "application/json"
+$response.Content | Out-File "raw_base64.txt"
+[IO.File]::WriteAllBytes("meeting.docx", [Convert]::FromBase64String((Get-Content raw_base64.txt)))
+```
+
+---
+
+## Troubleshooting
+
+- **If you get a JSON object in `raw_base64.txt`, check your function code and output format.**
+- **Ensure your handler returns the raw base64 string and headers for `"word"` format.**
+- **Review Azure Function logs for errors.**
+
+---
+
+## Contributing
+
+- Fork the repo, create a feature branch, and submit a pull request.
+- Please include tests and update documentation for new features.
+
+---
+
+## License
+
+MIT License
+
+================================================================
+
+======================AUGUST TUESDAY 26===========================
+# Azure Functions VTT Meeting Processor — Work Log
+
+Date: 2025-08-26
+
+## Today's plan (record)
+- Ensure Word (.docx) output is returned as a binary response from the Function App.
+- Make the single-file handler accept binary bodies (Buffer / Uint8Array) so .docx responses are returned intact.
+- Provide local test commands to download the .docx directly and verify correct headers.
+- Pause work for the day; continue next session with testing or further fixes.
+
+## Changes applied (2025-08-26)
+1. generateWordOutput
+   - Now returns a binary `Buffer` as the response body.
+   - Uses correct MIME: `application/vnd.openxmlformats-officedocument.wordprocessingml.document`.
+   - Sets `Content-Disposition: attachment; filename="..._Analysis.docx"`.
+
+2. processSingleFile
+   - Now recognizes direct HTTP responses with `status`, `headers`, and a `body` that can be a `string`, `Buffer`, or `Uint8Array`.
+   - Prevents JSON-wrapping of binary responses so .docx files download correctly.
+
+Files updated:
+- src/functions/ProcessVttFile/index.js
+  - generateWordOutput(...) — returns Buffer and correct headers
+  - processSingleFile(...) — accepts Buffer/Uint8Array bodies
+
+## How to test locally (Windows)
+1. Start the Functions host:
+   - func start
+
+2. Download .docx response directly (binary):
+   - PowerShell:
+     ```powershell
+     Invoke-WebRequest -Uri "http://localhost:7071/api/ProcessVttFile?name=Exclaimer7.vtt&format=word" -OutFile "MeetingAnalysis.docx"
+     ```
+   - curl (Git Bash / WSL):
+     ```bash
+     curl "http://localhost:7071/api/ProcessVttFile?name=Exclaimer7.vtt&format=word" -o MeetingAnalysis.docx
+     ```
+
+3. Quick header check:
+   ```bash
+   curl -I "http://localhost:7071/api/ProcessVttFile?name=Exclaimer7.vtt&format=word"
+   ```
+   - Expect `Content-Type: application/vnd.openxmlformats-officedocument.wordprocessingml.document`
+   - Expect `Content-Disposition: attachment; filename=...`
+
+4. If the function returns JSON with base64 instead:
+   - PowerShell example to decode and write:
+     ```powershell
+     $r = Invoke-RestMethod -Uri "http://localhost:7071/api/ProcessVttFile" -Method Post -Body (@{ name='Exclaimer7.vtt'; outputFormat='word' } | ConvertTo-Json) -ContentType "application/json"
+     [System.IO.File]::WriteAllBytes("MeetingAnalysis.docx",[System.Convert]::FromBase64String($r.body))
+     ```
+
+## Notes
+- Returning a binary Buffer is preferred for direct downloads; avoid returning base64 unless the client expects it.
+- If you deploy to Azure, streaming logs help debug: `func azure functionapp logstream <APP_NAME>` or `az webapp log tail ...`.
+- Keep environment variables (TENANT_ID, CLIENT_ID, CLIENT_SECRET, OPENAI_ENDPOINT, OPENAI_KEY, OPENAI_DEPLOYMENT, SHAREPOINT_DRIVE_ID, SHAREPOINT_SITE_URL, MAX_VTT_CHARS) configured locally or in config for the Function App.
+
+## Next steps (pick one when you return)
+- Run local tests and verify .docx opens in Word.
+- Update Azure OpenAI call to a supported Azure REST/SDK pattern (if needed).
+- Implement Graph pagination for large drives and more robust VTT parsing.
+- Deploy to Azure and verify behavior in a Function App.
+
+## Commit suggestion
+```
+git add src/functions/ProcessVttFile/index.js README.md
+git commit -m "feat: return binary .docx from generateWordOutput and allow Buffer responses in processSingleFile; add work log"
+```
+
+==================================================================
+
 
 Next, please specify which area you'd like to focus on:
 
